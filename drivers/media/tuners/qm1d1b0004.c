@@ -186,8 +186,8 @@ static const struct dvb_tuner_ops qm1d1b0004_ops = {
 	.info = {
 		.name = "Sharp qm1d1b0004",
 
-		.frequency_min =  950000,
-		.frequency_max = 2150000,
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
 	},
 
 	.init = qm1d1b0004_init,
@@ -197,7 +197,7 @@ static const struct dvb_tuner_ops qm1d1b0004_ops = {
 };
 
 static int
-qm1d1b0004_probe(struct i2c_client *client, const struct i2c_device_id *id)
+qm1d1b0004_probe(struct i2c_client *client)
 {
 	struct dvb_frontend *fe;
 	struct qm1d1b0004_config *cfg;
@@ -208,7 +208,7 @@ qm1d1b0004_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	fe = cfg->fe;
 	i2c_set_clientdata(client, fe);
 
-	fe->tuner_priv = kzalloc(sizeof(struct qm1d1b0004_state), GFP_KERNEL);
+	fe->tuner_priv = kzalloc_obj(struct qm1d1b0004_state);
 	if (!fe->tuner_priv) {
 		ret = -ENOMEM;
 		goto err_mem;
@@ -232,20 +232,19 @@ err_mem:
 	return ret;
 }
 
-static int qm1d1b0004_remove(struct i2c_client *client)
+static void qm1d1b0004_remove(struct i2c_client *client)
 {
 	struct dvb_frontend *fe;
 
 	fe = i2c_get_clientdata(client);
 	kfree(fe->tuner_priv);
 	fe->tuner_priv = NULL;
-	return 0;
 }
 
 
 static const struct i2c_device_id qm1d1b0004_id[] = {
-	{"qm1d1b0004", 0},
-	{}
+	{ .name = "qm1d1b0004" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, qm1d1b0004_id);

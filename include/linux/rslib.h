@@ -2,7 +2,7 @@
 /*
  * Generic Reed Solomon encoder / decoder library
  *
- * Copyright (C) 2004 Thomas Gleixner (tglx@linutronix.de)
+ * Copyright (C) 2004 Thomas Gleixner (tglx@kernel.org)
  *
  * RS code lifted from reed solomon library written by Phil Karn
  * Copyright 2002 Phil Karn, KA9Q
@@ -10,7 +10,6 @@
 #ifndef _RSLIB_H_
 #define _RSLIB_H_
 
-#include <linux/list.h>
 #include <linux/types.h>	/* for gfp_t */
 #include <linux/gfp.h>		/* for GFP_KERNEL */
 
@@ -54,7 +53,7 @@ struct rs_codec {
  */
 struct rs_control {
 	struct rs_codec	*codec;
-	uint16_t	buffers[0];
+	uint16_t	buffers[];
 };
 
 /* General purpose RS codec, 8-bit data width, symbol width 1-15 bit  */

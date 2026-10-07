@@ -1,11 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * (C) 2000-2001 Svenning Soerensen <svenning@post5.tele.dk>
  * Copyright (c) 2011 Patrick McHardy <kaber@trash.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/ip.h>
 #include <linux/kernel.h>
@@ -109,11 +108,11 @@ static int netmap_tg4_check(const struct xt_tgchk_param *par)
 	const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
 
 	if (!(mr->range[0].flags & NF_NAT_RANGE_MAP_IPS)) {
-		pr_debug("bad MAP_IPS.\n");
+		pr_info_ratelimited("bad MAP_IPS.\n");
 		return -EINVAL;
 	}
 	if (mr->rangesize != 1) {
-		pr_debug("bad rangesize %u.\n", mr->rangesize);
+		pr_info_ratelimited("bad rangesize %u.\n", mr->rangesize);
 		return -EINVAL;
 	}
 	return nf_ct_netns_get(par->net, par->family);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ngene-cards.c: nGene PCIe bridge driver - card specific info
  *
@@ -7,20 +8,6 @@
  *                         Modifications for new nGene firmware,
  *                         support for EEPROM-copying,
  *                         support for new dual DVB-S2 card prototype
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 only, as published by the Free Software Foundation.
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * To obtain the license, point your browser to
- * http://www.gnu.org/copyleft/gpl.html
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -947,15 +934,11 @@ static int eeprom_read_ushort(struct i2c_adapter *adapter, u16 tag, u16 *data)
 
 static int eeprom_write_ushort(struct i2c_adapter *adapter, u16 tag, u16 data)
 {
-	int stat;
 	u8 buf[2];
 
 	buf[0] = data >> 8;
 	buf[1] = data & 0xff;
-	stat = WriteEEProm(adapter, tag, 2, buf);
-	if (stat)
-		return stat;
-	return 0;
+	return WriteEEProm(adapter, tag, 2, buf);
 }
 
 static s16 osc_deviation(void *priv, s16 deviation, int flag)
@@ -1172,8 +1155,7 @@ static const struct ngene_info ngene_info_terratec = {
 /****************************************************************************/
 
 #define NGENE_ID(_subvend, _subdev, _driverdata) { \
-	.vendor = NGENE_VID, .device = NGENE_PID, \
-	.subvendor = _subvend, .subdevice = _subdev, \
+	PCI_DEVICE_SUB(NGENE_VID, NGENE_PID, (_subvend), (_subdev)), \
 	.driver_data = (unsigned long) &_driverdata }
 
 /****************************************************************************/
@@ -1190,7 +1172,7 @@ static const struct pci_device_id ngene_id_tbl[] = {
 	NGENE_ID(0x18c3, 0xdd20, ngene_info_duoFlex),
 	NGENE_ID(0x1461, 0x062e, ngene_info_m780),
 	NGENE_ID(0x153b, 0x1167, ngene_info_terratec),
-	{0}
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, ngene_id_tbl);
 
@@ -1199,7 +1181,7 @@ MODULE_DEVICE_TABLE(pci, ngene_id_tbl);
 /****************************************************************************/
 
 static pci_ers_result_t ngene_error_detected(struct pci_dev *dev,
-					     enum pci_channel_state state)
+					     pci_channel_state_t state)
 {
 	dev_err(&dev->dev, "PCI error\n");
 	if (state == pci_channel_io_perm_failure)

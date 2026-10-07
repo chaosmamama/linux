@@ -2,25 +2,24 @@
 // Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
 // Copyright (c) 2018, Linaro Limited
 
-#include <linux/slab.h>
-#include <linux/wait.h>
-#include <linux/kernel.h>
 #include <linux/device.h>
-#include <linux/module.h>
-#include <linux/sched.h>
 #include <linux/jiffies.h>
+#include <linux/kernel.h>
+#include <linux/kref.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/kref.h>
-#include <linux/wait.h>
-#include <linux/soc/qcom/apr.h>
 #include <linux/platform_device.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+#include <linux/soc/qcom/apr.h>
+#include <linux/wait.h>
 #include <sound/asound.h>
 #include "q6adm.h"
 #include "q6afe.h"
 #include "q6core.h"
-#include "q6dsp-errno.h"
 #include "q6dsp-common.h"
+#include "q6dsp-errno.h"
 
 #define ADM_CMD_DEVICE_OPEN_V5		0x00010326
 #define ADM_CMDRSP_DEVICE_OPEN_V5	0x00010329
@@ -64,7 +63,6 @@ struct q6adm {
 	struct aprv2_ibasic_rsp_result_t result;
 	struct mutex lock;
 	wait_queue_head_t matrix_map_wait;
-	struct platform_device *pdev_routing;
 };
 
 struct q6adm_cmd_device_open_v5 {
@@ -92,7 +90,7 @@ struct q6adm_session_map_node_v5 {
 static struct q6copp *q6adm_find_copp(struct q6adm *adm, int port_idx,
 				  int copp_idx)
 {
-	struct q6copp *c = NULL;
+	struct q6copp *c;
 	struct q6copp *ret = NULL;
 	unsigned long flags;
 
@@ -109,131 +107,6 @@ static struct q6copp *q6adm_find_copp(struct q6adm *adm, int port_idx,
 
 	return ret;
 
-}
-
-static void q6adm_free_copp(struct kref *ref)
-{
-	struct q6copp *c = container_of(ref, struct q6copp, refcount);
-	struct q6adm *adm = c->adm;
-	unsigned long flags;
-
-	spin_lock_irqsave(&adm->copps_list_lock, flags);
-	clear_bit(c->copp_idx, &adm->copp_bitmap[c->afe_port]);
-	list_del(&c->node);
-	spin_unlock_irqrestore(&adm->copps_list_lock, flags);
-	kfree(c);
-}
-
-static int q6adm_callback(struct apr_device *adev, struct apr_resp_pkt *data)
-{
-	struct aprv2_ibasic_rsp_result_t *result = data->payload;
-	int port_idx, copp_idx;
-	struct apr_hdr *hdr = &data->hdr;
-	struct q6copp *copp;
-	struct q6adm *adm = dev_get_drvdata(&adev->dev);
-
-	if (!data->payload_size)
-		return 0;
-
-	copp_idx = (hdr->token) & 0XFF;
-	port_idx = ((hdr->token) >> 16) & 0xFF;
-	if (port_idx < 0 || port_idx >= AFE_MAX_PORTS) {
-		dev_err(&adev->dev, "Invalid port idx %d token %d\n",
-		       port_idx, hdr->token);
-		return 0;
-	}
-	if (copp_idx < 0 || copp_idx >= MAX_COPPS_PER_PORT) {
-		dev_err(&adev->dev, "Invalid copp idx %d token %d\n",
-			copp_idx, hdr->token);
-		return 0;
-	}
-
-	switch (hdr->opcode) {
-	case APR_BASIC_RSP_RESULT: {
-		if (result->status != 0) {
-			dev_err(&adev->dev, "cmd = 0x%x return error = 0x%x\n",
-				result->opcode, result->status);
-		}
-		switch (result->opcode) {
-		case ADM_CMD_DEVICE_OPEN_V5:
-		case ADM_CMD_DEVICE_CLOSE_V5:
-			copp = q6adm_find_copp(adm, port_idx, copp_idx);
-			if (!copp)
-				return 0;
-
-			copp->result = *result;
-			wake_up(&copp->wait);
-			kref_put(&copp->refcount, q6adm_free_copp);
-			break;
-		case ADM_CMD_MATRIX_MAP_ROUTINGS_V5:
-			adm->result = *result;
-			wake_up(&adm->matrix_map_wait);
-			break;
-
-		default:
-			dev_err(&adev->dev, "Unknown Cmd: 0x%x\n",
-				result->opcode);
-			break;
-		}
-		return 0;
-	}
-	case ADM_CMDRSP_DEVICE_OPEN_V5: {
-		struct adm_cmd_rsp_device_open_v5 {
-			u32 status;
-			u16 copp_id;
-			u16 reserved;
-		} __packed * open = data->payload;
-
-		copp = q6adm_find_copp(adm, port_idx, copp_idx);
-		if (!copp)
-			return 0;
-
-		if (open->copp_id == INVALID_COPP_ID) {
-			dev_err(&adev->dev, "Invalid coppid rxed %d\n",
-				open->copp_id);
-			copp->result.status = ADSP_EBADPARAM;
-			wake_up(&copp->wait);
-			kref_put(&copp->refcount, q6adm_free_copp);
-			break;
-		}
-		copp->result.opcode = hdr->opcode;
-		copp->id = open->copp_id;
-		wake_up(&copp->wait);
-		kref_put(&copp->refcount, q6adm_free_copp);
-	}
-	break;
-	default:
-		dev_err(&adev->dev, "Unknown cmd:0x%x\n",
-		       hdr->opcode);
-		break;
-	}
-
-	return 0;
-}
-
-static struct q6copp *q6adm_alloc_copp(struct q6adm *adm, int port_idx)
-{
-	struct q6copp *c;
-	int idx;
-
-	idx = find_first_zero_bit(&adm->copp_bitmap[port_idx],
-				  MAX_COPPS_PER_PORT);
-
-	if (idx > MAX_COPPS_PER_PORT)
-		return ERR_PTR(-EBUSY);
-
-	c = kzalloc(sizeof(*c), GFP_ATOMIC);
-	if (!c)
-		return ERR_PTR(-ENOMEM);
-
-	set_bit(idx, &adm->copp_bitmap[port_idx]);
-	c->copp_idx = idx;
-	c->afe_port = port_idx;
-	c->adm = adm;
-
-	init_waitqueue_head(&c->wait);
-
-	return c;
 }
 
 static int q6adm_apr_send_copp_pkt(struct q6adm *adm, struct q6copp *copp,
@@ -295,13 +168,143 @@ static int q6adm_device_close(struct q6adm *adm, struct q6copp *copp,
 	return q6adm_apr_send_copp_pkt(adm, copp, &close, 0);
 }
 
+static void q6adm_free_copp(struct kref *ref)
+{
+	struct q6copp *c = container_of(ref, struct q6copp, refcount);
+	struct q6adm *adm = c->adm;
+	unsigned long flags;
+	int ret;
+
+	ret = q6adm_device_close(adm, c, c->afe_port, c->copp_idx);
+	if (ret < 0)
+		dev_err(adm->dev, "Failed to close copp %d\n", ret);
+
+	spin_lock_irqsave(&adm->copps_list_lock, flags);
+	clear_bit(c->copp_idx, &adm->copp_bitmap[c->afe_port]);
+	list_del(&c->node);
+	spin_unlock_irqrestore(&adm->copps_list_lock, flags);
+	kfree(c);
+}
+
+static int q6adm_callback(struct apr_device *adev, const struct apr_resp_pkt *data)
+{
+	const struct aprv2_ibasic_rsp_result_t *result = data->payload;
+	int port_idx, copp_idx;
+	const struct apr_hdr *hdr = &data->hdr;
+	struct q6copp *copp;
+	struct q6adm *adm = dev_get_drvdata(&adev->dev);
+
+	if (!data->payload_size)
+		return 0;
+
+	copp_idx = (hdr->token) & 0XFF;
+	port_idx = ((hdr->token) >> 16) & 0xFF;
+	if (port_idx < 0 || port_idx >= AFE_MAX_PORTS) {
+		dev_err(&adev->dev, "Invalid port idx %d token %d\n",
+		       port_idx, hdr->token);
+		return 0;
+	}
+	if (copp_idx < 0 || copp_idx >= MAX_COPPS_PER_PORT) {
+		dev_err(&adev->dev, "Invalid copp idx %d token %d\n",
+			copp_idx, hdr->token);
+		return 0;
+	}
+
+	switch (hdr->opcode) {
+	case APR_BASIC_RSP_RESULT: {
+		if (result->status != 0) {
+			dev_err(&adev->dev, "cmd = 0x%x return error = 0x%x\n",
+				result->opcode, result->status);
+		}
+		switch (result->opcode) {
+		case ADM_CMD_DEVICE_OPEN_V5:
+		case ADM_CMD_DEVICE_CLOSE_V5:
+			list_for_each_entry(copp, &adm->copps_list, node) {
+				if ((port_idx == copp->afe_port) && (copp_idx == copp->copp_idx)) {
+					copp->result = *result;
+					wake_up(&copp->wait);
+					break;
+				}
+			}
+			break;
+		case ADM_CMD_MATRIX_MAP_ROUTINGS_V5:
+			adm->result = *result;
+			wake_up(&adm->matrix_map_wait);
+			break;
+
+		default:
+			dev_err(&adev->dev, "Unknown Cmd: 0x%x\n",
+				result->opcode);
+			break;
+		}
+		return 0;
+	}
+	case ADM_CMDRSP_DEVICE_OPEN_V5: {
+		struct adm_cmd_rsp_device_open_v5 {
+			u32 status;
+			u16 copp_id;
+			u16 reserved;
+		} __packed *open = data->payload;
+
+		copp = q6adm_find_copp(adm, port_idx, copp_idx);
+		if (!copp)
+			return 0;
+
+		if (open->copp_id == INVALID_COPP_ID) {
+			dev_err(&adev->dev, "Invalid coppid rxed %d\n",
+				open->copp_id);
+			copp->result.status = ADSP_EBADPARAM;
+			wake_up(&copp->wait);
+			kref_put(&copp->refcount, q6adm_free_copp);
+			break;
+		}
+		copp->result.opcode = hdr->opcode;
+		copp->id = open->copp_id;
+		wake_up(&copp->wait);
+		kref_put(&copp->refcount, q6adm_free_copp);
+	}
+	break;
+	default:
+		dev_err(&adev->dev, "Unknown cmd:0x%x\n",
+		       hdr->opcode);
+		break;
+	}
+
+	return 0;
+}
+
+static struct q6copp *q6adm_alloc_copp(struct q6adm *adm, int port_idx)
+{
+	struct q6copp *c;
+	int idx;
+
+	idx = find_first_zero_bit(&adm->copp_bitmap[port_idx],
+				  MAX_COPPS_PER_PORT);
+
+	if (idx >= MAX_COPPS_PER_PORT)
+		return ERR_PTR(-EBUSY);
+
+	c = kzalloc_obj(*c, GFP_ATOMIC);
+	if (!c)
+		return ERR_PTR(-ENOMEM);
+
+	set_bit(idx, &adm->copp_bitmap[port_idx]);
+	c->copp_idx = idx;
+	c->afe_port = port_idx;
+	c->adm = adm;
+
+	init_waitqueue_head(&c->wait);
+
+	return c;
+}
+
 static struct q6copp *q6adm_find_matching_copp(struct q6adm *adm,
 					       int port_id, int topology,
 					       int mode, int rate,
 					       int channel_mode, int bit_width,
 					       int app_type)
 {
-	struct q6copp *c = NULL;
+	struct q6copp *c;
 	struct q6copp *ret = NULL;
 	unsigned long flags;
 
@@ -327,11 +330,9 @@ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
 	struct q6adm_cmd_device_open_v5 *open;
 	int afe_port = q6afe_get_port_id(port_id);
 	struct apr_pkt *pkt;
-	void *p;
-	int ret, pkt_size;
+	int ret, pkt_size = APR_HDR_SIZE + sizeof(*open);
 
-	pkt_size = APR_HDR_SIZE + sizeof(*open);
-	p = kzalloc(pkt_size, GFP_KERNEL);
+	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
 	if (!p)
 		return -ENOMEM;
 
@@ -356,14 +357,9 @@ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
 	ret = q6dsp_map_channels(&open->dev_channel_mapping[0],
 				 channel_mode);
 	if (ret)
-		goto err;
+		return ret;
 
-	ret = q6adm_apr_send_copp_pkt(adm, copp, pkt,
-				      ADM_CMDRSP_DEVICE_OPEN_V5);
-
-err:
-	kfree(pkt);
-	return ret;
+	return q6adm_apr_send_copp_pkt(adm, copp, pkt, ADM_CMDRSP_DEVICE_OPEN_V5);
 }
 
 /**
@@ -392,7 +388,7 @@ struct q6copp *q6adm_open(struct device *dev, int port_id, int path, int rate,
 	int ret = 0;
 
 	if (port_id < 0) {
-		dev_err(dev, "Invalid port_id 0x%x\n", port_id);
+		dev_err(dev, "Invalid port_id %d\n", port_id);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -405,7 +401,7 @@ struct q6copp *q6adm_open(struct device *dev, int port_id, int path, int rate,
 
 	spin_lock_irqsave(&adm->copps_list_lock, flags);
 	copp = q6adm_alloc_copp(adm, port_id);
-	if (IS_ERR_OR_NULL(copp)) {
+	if (IS_ERR(copp)) {
 		spin_unlock_irqrestore(&adm->copps_list_lock, flags);
 		return ERR_CAST(copp);
 	}
@@ -420,7 +416,6 @@ struct q6copp *q6adm_open(struct device *dev, int port_id, int path, int rate,
 	copp->channels = channel_mode;
 	copp->bit_width = bit_width;
 	copp->app_type = app_type;
-
 
 	ret = q6adm_device_open(adm, copp, port_id, path, topology,
 				channel_mode, bit_width, rate);
@@ -467,15 +462,13 @@ int q6adm_matrix_map(struct device *dev, int path,
 	struct q6adm_session_map_node_v5 *node;
 	struct apr_pkt *pkt;
 	uint16_t *copps_list;
-	int pkt_size, ret, i, copp_idx;
-	void *matrix_map = NULL;
-	struct q6copp *copp;
-
+	int ret, i, copp_idx;
 	/* Assumes port_ids have already been validated during adm_open */
-	pkt_size = (APR_HDR_SIZE + sizeof(*route) +  sizeof(*node) +
+	struct q6copp *copp;
+	int pkt_size = (APR_HDR_SIZE + sizeof(*route) +  sizeof(*node) +
 		    (sizeof(uint32_t) * payload_map.num_copps));
 
-	matrix_map = kzalloc(pkt_size, GFP_KERNEL);
+	void *matrix_map __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
 	if (!matrix_map)
 		return -ENOMEM;
 
@@ -511,18 +504,15 @@ int q6adm_matrix_map(struct device *dev, int path,
 		int port_idx = payload_map.port_id[i];
 
 		if (port_idx < 0) {
-			dev_err(dev, "Invalid port_id 0x%x\n",
+			dev_err(dev, "Invalid port_id %d\n",
 				payload_map.port_id[i]);
-			kfree(pkt);
 			return -EINVAL;
 		}
 		copp_idx = payload_map.copp_idx[i];
 
 		copp = q6adm_find_copp(adm, port_idx, copp_idx);
-		if (!copp) {
-			kfree(pkt);
+		if (!copp)
 			return -EINVAL;
-		}
 
 		copps_list[i] = copp->id;
 		kref_put(&copp->refcount, q6adm_free_copp);
@@ -555,7 +545,6 @@ int q6adm_matrix_map(struct device *dev, int path,
 
 fail_cmd:
 	mutex_unlock(&adm->lock);
-	kfree(pkt);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(q6adm_matrix_map);
@@ -570,15 +559,6 @@ EXPORT_SYMBOL_GPL(q6adm_matrix_map);
  */
 int q6adm_close(struct device *dev, struct q6copp *copp)
 {
-	struct q6adm *adm = dev_get_drvdata(dev->parent);
-	int ret = 0;
-
-	ret = q6adm_device_close(adm, copp, copp->afe_port, copp->copp_idx);
-	if (ret < 0) {
-		dev_err(adm->dev, "Failed to close copp %d\n", ret);
-		return ret;
-	}
-
 	kref_put(&copp->refcount, q6adm_free_copp);
 
 	return 0;
@@ -588,15 +568,14 @@ EXPORT_SYMBOL_GPL(q6adm_close);
 static int q6adm_probe(struct apr_device *adev)
 {
 	struct device *dev = &adev->dev;
-	struct device_node *dais_np;
 	struct q6adm *adm;
 
-	adm = devm_kzalloc(&adev->dev, sizeof(*adm), GFP_KERNEL);
+	adm = devm_kzalloc(dev, sizeof(*adm), GFP_KERNEL);
 	if (!adm)
 		return -ENOMEM;
 
 	adm->apr = adev;
-	dev_set_drvdata(&adev->dev, adm);
+	dev_set_drvdata(dev, adm);
 	adm->dev = dev;
 	q6core_get_svc_api_info(adev->svc_id, &adm->ainfo);
 	mutex_init(&adm->lock);
@@ -605,35 +584,19 @@ static int q6adm_probe(struct apr_device *adev)
 	INIT_LIST_HEAD(&adm->copps_list);
 	spin_lock_init(&adm->copps_list_lock);
 
-	dais_np = of_get_child_by_name(dev->of_node, "routing");
-	if (dais_np) {
-		adm->pdev_routing = of_platform_device_create(dais_np,
-							   "q6routing", dev);
-		of_node_put(dais_np);
-	}
-
-	return 0;
+	return devm_of_platform_populate(dev);
 }
 
-static int q6adm_remove(struct apr_device *adev)
-{
-	struct q6adm *adm = dev_get_drvdata(&adev->dev);
-
-	if (adm->pdev_routing)
-		of_platform_device_destroy(&adm->pdev_routing->dev, NULL);
-
-	return 0;
-}
-
+#ifdef CONFIG_OF
 static const struct of_device_id q6adm_device_id[]  = {
 	{ .compatible = "qcom,q6adm" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, q6adm_device_id);
+#endif
 
 static struct apr_driver qcom_q6adm_driver = {
 	.probe = q6adm_probe,
-	.remove = q6adm_remove,
 	.callback = q6adm_callback,
 	.driver = {
 		.name = "qcom-q6adm",

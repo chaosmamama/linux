@@ -288,7 +288,16 @@ struct oct_fw_info {
 	 */
 	u32 app_mode;
 	char   liquidio_firmware_version[32];
+	/* Fields extracted from legacy string 'liquidio_firmware_version' */
+	struct {
+		u8  maj;
+		u8  min;
+		u8  rev;
+	} ver;
 };
+
+#define OCT_FW_VER(maj, min, rev) \
+	(((u32)(maj) << 16) | ((u32)(min) << 8) | ((u32)(rev)))
 
 /* wrappers around work structs */
 struct cavium_wk {
@@ -307,6 +316,8 @@ struct octdev_props {
 	 * device pointer (used for OS specific calls).
 	 */
 	int    rx_on;
+	int    fec;
+	int    fec_boot;
 	int    napi_enabled;
 	int    gmxport;
 	struct net_device *netdev;
@@ -379,14 +390,13 @@ struct octeon_sriov_info {
 
 	struct lio_trusted_vf	trusted_vf;
 
-	/*lookup table that maps DPI ring number to VF pci_dev struct pointer*/
-	struct pci_dev *dpiring_to_vfpcidev_lut[MAX_POSSIBLE_VFS];
-
 	u64	vf_macaddr[MAX_POSSIBLE_VFS];
 
 	u16	vf_vlantci[MAX_POSSIBLE_VFS];
 
 	int	vf_linkstate[MAX_POSSIBLE_VFS];
+
+	bool    vf_spoofchk[MAX_POSSIBLE_VFS];
 
 	u64	vf_drv_loaded_mask;
 };
@@ -598,6 +608,9 @@ struct octeon_device {
 	u8  speed_boot;
 	u8  speed_setting;
 	u8  no_speed_setting;
+
+	u32    vfstats_poll;
+#define LIO_VFSTATS_POLL 10
 };
 
 #define  OCT_DRV_ONLINE 1
@@ -688,25 +701,6 @@ octeon_get_dispatch(struct octeon_device *octeon_dev, u16 opcode,
  *  @return Failure: NULL.
  */
 struct octeon_device *lio_get_device(u32 octeon_id);
-
-/** Get the octeon id assigned to the octeon device passed as argument.
- *  This function is exported to other modules.
- *  @param dev - octeon device pointer passed as a void *.
- *  @return octeon device id
- */
-int lio_get_device_id(void *dev);
-
-static inline u16 OCTEON_MAJOR_REV(struct octeon_device *oct)
-{
-	u16 rev = (oct->rev_id & 0xC) >> 2;
-
-	return (rev == 0) ? 1 : rev;
-}
-
-static inline u16 OCTEON_MINOR_REV(struct octeon_device *oct)
-{
-	return oct->rev_id & 0x3;
-}
 
 /** Read windowed register.
  *  @param  oct   -  pointer to the Octeon device.
@@ -799,13 +793,6 @@ int octeon_init_consoles(struct octeon_device *oct);
  */
 int octeon_add_console(struct octeon_device *oct, u32 console_num,
 		       char *dbg_enb);
-
-/** write or read from a console */
-int octeon_console_write(struct octeon_device *oct, u32 console_num,
-			 char *buffer, u32 write_request_size, u32 flags);
-int octeon_console_write_avail(struct octeon_device *oct, u32 console_num);
-
-int octeon_console_read_avail(struct octeon_device *oct, u32 console_num);
 
 /** Removes all attached consoles. */
 void octeon_remove_consoles(struct octeon_device *oct);

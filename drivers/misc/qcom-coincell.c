@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2013, The Linux Foundation. All rights reserved.
  * Copyright (c) 2015, Sony Mobile Communications Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -16,7 +8,6 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 struct qcom_coincell {
@@ -133,8 +124,8 @@ static int qcom_coincell_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id qcom_coincell_match_table[] = {
-	{ .compatible = "qcom,pm8941-coincell", },
-	{}
+	{ .compatible = "qcom,pm8941-coincell" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(of, qcom_coincell_match_table);

@@ -1,23 +1,21 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2017 Linaro Ltd. <ard.biesheuvel@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
  */
 
 #ifndef __ASM_SIMD_H
 #define __ASM_SIMD_H
 
+#include <linux/cleanup.h>
 #include <linux/compiler.h>
 #include <linux/irqflags.h>
 #include <linux/percpu.h>
 #include <linux/preempt.h>
 #include <linux/types.h>
 
-#ifdef CONFIG_KERNEL_MODE_NEON
+#include <asm/neon.h>
 
-DECLARE_PER_CPU(bool, kernel_neon_busy);
+#ifdef CONFIG_KERNEL_MODE_NEON
 
 /*
  * may_use_simd - whether it is allowable at this time to issue SIMD
@@ -29,15 +27,12 @@ DECLARE_PER_CPU(bool, kernel_neon_busy);
 static __must_check inline bool may_use_simd(void)
 {
 	/*
-	 * kernel_neon_busy is only set while preemption is disabled,
-	 * and is clear whenever preemption is enabled. Since
-	 * this_cpu_read() is atomic w.r.t. preemption, kernel_neon_busy
-	 * cannot change under our feet -- if it's set we cannot be
-	 * migrated, and if it's clear we cannot be migrated to a CPU
-	 * where it is set.
+	 * We must make sure that the SVE has been initialized properly
+	 * before using the SIMD in kernel.
 	 */
-	return !in_irq() && !irqs_disabled() && !in_nmi() &&
-		!this_cpu_read(kernel_neon_busy);
+	return !WARN_ON(!system_capabilities_finalized()) &&
+	       system_supports_fpsimd() &&
+	       !in_hardirq() && !in_nmi();
 }
 
 #else /* ! CONFIG_KERNEL_MODE_NEON */
@@ -47,5 +42,19 @@ static __must_check inline bool may_use_simd(void) {
 }
 
 #endif /* ! CONFIG_KERNEL_MODE_NEON */
+
+DEFINE_LOCK_GUARD_1(ksimd,
+		    struct user_fpsimd_state,
+		    kernel_neon_begin(_T->lock),
+		    kernel_neon_end(_T->lock))
+
+#define __scoped_ksimd(_label)					\
+	for (struct user_fpsimd_state __uninitialized __st;	\
+	     true; ({ goto _label; }))				\
+		if (0) {					\
+_label:			break;					\
+		} else scoped_guard(ksimd, &__st)
+
+#define scoped_ksimd()	__scoped_ksimd(__UNIQUE_ID(label))
 
 #endif

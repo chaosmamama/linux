@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * GPIO and pin control functions on this SOC are handled by the "TLMM"
  * device.  The driver which controls this device is pinctrl-msm.c.  Each
@@ -60,7 +52,7 @@ static int qdf2xxx_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	/* The number of GPIOs in the approved list */
-	ret = device_property_read_u8_array(&pdev->dev, "gpios", NULL, 0);
+	ret = device_property_count_u8(&pdev->dev, "gpios");
 	if (ret < 0) {
 		dev_err(&pdev->dev, "missing 'gpios' property\n");
 		return ret;
@@ -98,23 +90,22 @@ static int qdf2xxx_pinctrl_probe(struct platform_device *pdev)
 	 */
 	for (i = 0; i < num_gpios; i++) {
 		pins[i].number = i;
-		groups[i].pins = &pins[i].number;
+		groups[i].grp.pins = &pins[i].number;
 	}
 
 	/* Populate the entries that are meant to be exposed as GPIOs. */
 	for (i = 0; i < avail_gpios; i++) {
 		unsigned int gpio = gpios[i];
 
-		groups[gpio].npins = 1;
+		groups[gpio].grp.npins = 1;
 		snprintf(names[i], NAME_SIZE, "gpio%u", gpio);
 		pins[gpio].name = names[i];
-		groups[gpio].name = names[i];
+		groups[gpio].grp.name = names[i];
 
 		groups[gpio].ctl_reg = 0x10000 * gpio;
 		groups[gpio].io_reg = 0x04 + 0x10000 * gpio;
 		groups[gpio].intr_cfg_reg = 0x08 + 0x10000 * gpio;
 		groups[gpio].intr_status_reg = 0x0c + 0x10000 * gpio;
-		groups[gpio].intr_target_reg = 0x08 + 0x10000 * gpio;
 
 		groups[gpio].mux_bit = 2;
 		groups[gpio].pull_bit = 0;
@@ -150,10 +141,9 @@ MODULE_DEVICE_TABLE(acpi, qdf2xxx_acpi_ids);
 static struct platform_driver qdf2xxx_pinctrl_driver = {
 	.driver = {
 		.name = "qdf2xxx-pinctrl",
-		.acpi_match_table = ACPI_PTR(qdf2xxx_acpi_ids),
+		.acpi_match_table = qdf2xxx_acpi_ids,
 	},
 	.probe = qdf2xxx_pinctrl_probe,
-	.remove = msm_pinctrl_remove,
 };
 
 static int __init qdf2xxx_pinctrl_init(void)

@@ -6,116 +6,81 @@
 #include <rdma/rdma_cm.h>
 #include <rdma/ib_verbs.h>
 #include <rdma/restrack.h>
+#include <rdma/rdma_counter.h>
 #include <linux/mutex.h>
 #include <linux/sched/task.h>
 #include <linux/pid_namespace.h>
 
 #include "cma_priv.h"
+#include "restrack.h"
 
-static int fill_res_noop(struct sk_buff *msg,
-			 struct rdma_restrack_entry *entry)
+/**
+ * rdma_restrack_init() - initialize and allocate resource tracking
+ * @dev:  IB device
+ *
+ * Return: 0 on success
+ */
+int rdma_restrack_init(struct ib_device *dev)
 {
+	struct rdma_restrack_root *rt;
+	int i;
+
+	dev->res = kzalloc_objs(*rt, RDMA_RESTRACK_MAX);
+	if (!dev->res)
+		return -ENOMEM;
+
+	rt = dev->res;
+
+	for (i = 0; i < RDMA_RESTRACK_MAX; i++)
+		xa_init_flags(&rt[i].xa, XA_FLAGS_ALLOC);
+
 	return 0;
 }
 
-void rdma_restrack_init(struct rdma_restrack_root *res)
+/**
+ * rdma_restrack_clean() - clean resource tracking
+ * @dev:  IB device
+ */
+void rdma_restrack_clean(struct ib_device *dev)
 {
-	init_rwsem(&res->rwsem);
-	res->fill_res_entry = fill_res_noop;
-}
+	struct rdma_restrack_root *rt = dev->res;
+	int i;
 
-static const char *type2str(enum rdma_restrack_type type)
-{
-	static const char * const names[RDMA_RESTRACK_MAX] = {
-		[RDMA_RESTRACK_PD] = "PD",
-		[RDMA_RESTRACK_CQ] = "CQ",
-		[RDMA_RESTRACK_QP] = "QP",
-		[RDMA_RESTRACK_CM_ID] = "CM_ID",
-		[RDMA_RESTRACK_MR] = "MR",
-	};
+	for (i = 0 ; i < RDMA_RESTRACK_MAX; i++) {
+		struct xarray *xa = &dev->res[i].xa;
 
-	return names[type];
-};
-
-void rdma_restrack_clean(struct rdma_restrack_root *res)
-{
-	struct rdma_restrack_entry *e;
-	char buf[TASK_COMM_LEN];
-	struct ib_device *dev;
-	const char *owner;
-	int bkt;
-
-	if (hash_empty(res->hash))
-		return;
-
-	dev = container_of(res, struct ib_device, res);
-	pr_err("restrack: %s", CUT_HERE);
-	pr_err("restrack: BUG: RESTRACK detected leak of resources on %s\n",
-	       dev->name);
-	hash_for_each(res->hash, bkt, e, node) {
-		if (rdma_is_kernel_res(e)) {
-			owner = e->kern_name;
-		} else {
-			/*
-			 * There is no need to call get_task_struct here,
-			 * because we can be here only if there are more
-			 * get_task_struct() call than put_task_struct().
-			 */
-			get_task_comm(buf, e->task);
-			owner = buf;
-		}
-
-		pr_err("restrack: %s %s object allocated by %s is not freed\n",
-		       rdma_is_kernel_res(e) ? "Kernel" : "User",
-		       type2str(e->type), owner);
+		WARN_ON(!xa_empty(xa));
+		xa_destroy(xa);
 	}
-	pr_err("restrack: %s", CUT_HERE);
+	kfree(rt);
 }
 
-int rdma_restrack_count(struct rdma_restrack_root *res,
-			enum rdma_restrack_type type,
-			struct pid_namespace *ns)
+/**
+ * rdma_restrack_count() - the current usage of specific object
+ * @dev:  IB device
+ * @type: actual type of object to operate
+ * @show_details: count driver specific objects
+ */
+u32 rdma_restrack_count(struct ib_device *dev, enum rdma_restrack_type type,
+			bool show_details)
 {
+	struct rdma_restrack_root *rt = &dev->res[type];
 	struct rdma_restrack_entry *e;
+	XA_STATE(xas, &rt->xa, 0);
 	u32 cnt = 0;
 
-	down_read(&res->rwsem);
-	hash_for_each_possible(res->hash, e, node, type) {
-		if (ns == &init_pid_ns ||
-		    (!rdma_is_kernel_res(e) &&
-		     ns == task_active_pid_ns(e->task)))
-			cnt++;
+	xa_lock(&rt->xa);
+	xas_for_each(&xas, e, U32_MAX) {
+		if (xa_is_zero(e))
+			continue;
+		if (xa_get_mark(&rt->xa, e->id, RESTRACK_DD) && !show_details)
+			continue;
+		cnt++;
 	}
-	up_read(&res->rwsem);
+	xa_unlock(&rt->xa);
 	return cnt;
 }
 EXPORT_SYMBOL(rdma_restrack_count);
-
-static void set_kern_name(struct rdma_restrack_entry *res)
-{
-	struct ib_pd *pd;
-
-	switch (res->type) {
-	case RDMA_RESTRACK_QP:
-		pd = container_of(res, struct ib_qp, res)->pd;
-		if (!pd) {
-			WARN_ONCE(true, "XRC QPs are not supported\n");
-			/* Survive, despite the programmer's error */
-			res->kern_name = " ";
-		}
-		break;
-	case RDMA_RESTRACK_MR:
-		pd = container_of(res, struct ib_mr, res)->pd;
-		break;
-	default:
-		/* Other types set kern_name directly */
-		pd = NULL;
-		break;
-	}
-
-	if (pd)
-		res->kern_name = pd->res.kern_name;
-}
 
 static struct ib_device *res_to_dev(struct rdma_restrack_entry *res)
 {
@@ -131,58 +96,203 @@ static struct ib_device *res_to_dev(struct rdma_restrack_entry *res)
 				    res)->id.device;
 	case RDMA_RESTRACK_MR:
 		return container_of(res, struct ib_mr, res)->device;
+	case RDMA_RESTRACK_CTX:
+		return container_of(res, struct ib_ucontext, res)->device;
+	case RDMA_RESTRACK_COUNTER:
+		return container_of(res, struct rdma_counter, res)->device;
+	case RDMA_RESTRACK_SRQ:
+		return container_of(res, struct ib_srq, res)->device;
+	case RDMA_RESTRACK_DMAH:
+		return container_of(res, struct ib_dmah, res)->device;
+	case RDMA_RESTRACK_COMP_CNTR:
+		return container_of(res, struct ib_comp_cntr, res)->device;
 	default:
 		WARN_ONCE(true, "Wrong resource tracking type %u\n", res->type);
 		return NULL;
 	}
 }
 
-static bool res_is_user(struct rdma_restrack_entry *res)
+/**
+ * rdma_restrack_attach_task() - attach the task onto this resource,
+ * valid for user space restrack entries.
+ * @res:  resource entry
+ * @task: the task to attach
+ */
+static void rdma_restrack_attach_task(struct rdma_restrack_entry *res,
+				      struct task_struct *task)
 {
-	switch (res->type) {
-	case RDMA_RESTRACK_PD:
-		return container_of(res, struct ib_pd, res)->uobject;
-	case RDMA_RESTRACK_CQ:
-		return container_of(res, struct ib_cq, res)->uobject;
-	case RDMA_RESTRACK_QP:
-		return container_of(res, struct ib_qp, res)->uobject;
-	case RDMA_RESTRACK_CM_ID:
-		return !res->kern_name;
-	case RDMA_RESTRACK_MR:
-		return container_of(res, struct ib_mr, res)->pd->uobject;
-	default:
-		WARN_ONCE(true, "Wrong resource tracking type %u\n", res->type);
-		return false;
-	}
+	if (WARN_ON_ONCE(!task))
+		return;
+
+	if (res->task)
+		put_task_struct(res->task);
+	get_task_struct(task);
+	res->task = task;
+	res->user = true;
 }
 
-void rdma_restrack_add(struct rdma_restrack_entry *res)
+static struct rdma_restrack_root *res_to_rt(struct rdma_restrack_entry *res)
 {
 	struct ib_device *dev = res_to_dev(res);
 
-	if (!dev)
-		return;
+	if (WARN_ON(!dev))
+		return NULL;
 
-	if (res->type != RDMA_RESTRACK_CM_ID || !res_is_user(res))
-		res->task = NULL;
+	return &dev->res[res->type];
+}
 
-	if (res_is_user(res)) {
-		if (!res->task)
-			rdma_restrack_set_task(res, current);
-		res->kern_name = NULL;
-	} else {
-		set_kern_name(res);
+static void restrack_drain_res(struct rdma_restrack_root *rt,
+			       struct rdma_restrack_entry *res)
+{
+	if (rt) {
+		struct rdma_restrack_entry *old;
+
+		old = xa_cmpxchg(&rt->xa, res->id, res, XA_ZERO_ENTRY,
+				 GFP_KERNEL);
+		WARN_ON(old != res);
 	}
 
+	rdma_restrack_put(res);
+	wait_for_completion(&res->comp);
+}
+
+static void restrack_restore_res(struct rdma_restrack_root *rt,
+				 struct rdma_restrack_entry *res)
+{
+	reinit_completion(&res->comp);
+	kref_init(&res->kref);
+
+	if (rt) {
+		struct rdma_restrack_entry *old;
+
+		old = xa_cmpxchg(&rt->xa, res->id, XA_ZERO_ENTRY, res,
+				 GFP_KERNEL);
+		WARN_ON(old);
+	}
+}
+
+/**
+ * rdma_restrack_set_name() - set the task for this resource
+ * @res:  resource entry
+ * @caller: kernel name, the current task will be used if the caller is NULL.
+ */
+void rdma_restrack_set_name(struct rdma_restrack_entry *res, const char *caller)
+{
+	if (caller) {
+		res->kern_name = caller;
+		return;
+	}
+
+	rdma_restrack_attach_task(res, current);
+}
+EXPORT_SYMBOL(rdma_restrack_set_name);
+
+/**
+ * rdma_restrack_parent_name() - set the restrack name properties based
+ * on parent restrack
+ * @dst: destination resource entry
+ * @parent: parent resource entry
+ */
+void rdma_restrack_parent_name(struct rdma_restrack_entry *dst,
+			       const struct rdma_restrack_entry *parent)
+{
+	if (rdma_is_kernel_res(parent))
+		dst->kern_name = parent->kern_name;
+	else
+		rdma_restrack_attach_task(dst, parent->task);
+}
+EXPORT_SYMBOL(rdma_restrack_parent_name);
+
+/**
+ * rdma_restrack_new() - Initializes new restrack entry to allow _put() interface
+ * to release memory in fully automatic way.
+ * @res: Entry to initialize
+ * @type: REstrack type
+ */
+void rdma_restrack_new(struct rdma_restrack_entry *res,
+		       enum rdma_restrack_type type)
+{
 	kref_init(&res->kref);
 	init_completion(&res->comp);
-	res->valid = true;
+	res->type = type;
+}
+EXPORT_SYMBOL(rdma_restrack_new);
 
-	down_write(&dev->res.rwsem);
-	hash_add(dev->res.hash, &res->node, res->type);
-	up_write(&dev->res.rwsem);
+/**
+ * rdma_restrack_add() - add object to the resource tracking database.
+ * If this resource reuses an ID of a resource that was already destroyed
+ * after calling rdma_restrack_begin() but didn't yet call
+ * rdma_restrack_commit_del() it can result in an untracked QP.
+ * @res:  resource entry
+ */
+void rdma_restrack_add(struct rdma_restrack_entry *res)
+{
+	struct rdma_restrack_root *rt;
+	int ret = 0;
+
+	if (res->no_track)
+		goto out;
+
+	rt = res_to_rt(res);
+	if (!rt)
+		return;
+
+	if (res->type == RDMA_RESTRACK_QP) {
+		/* Special case to ensure that LQPN points to right QP */
+		struct ib_qp *qp = container_of(res, struct ib_qp, res);
+
+		WARN_ONCE(qp->qp_num >> 24 || qp->port >> 8,
+			  "QP number 0x%0X and port 0x%0X", qp->qp_num,
+			  qp->port);
+		res->id = qp->qp_num;
+		if (qp->qp_type == IB_QPT_SMI || qp->qp_type == IB_QPT_GSI)
+			res->id |= qp->port << 24;
+		ret = xa_insert(&rt->xa, res->id, res, GFP_KERNEL);
+		if (ret)
+			res->id = 0;
+
+		if (qp->qp_type >= IB_QPT_DRIVER)
+			xa_set_mark(&rt->xa, res->id, RESTRACK_DD);
+	} else if (res->type == RDMA_RESTRACK_COUNTER) {
+		/* Special case to ensure that cntn points to right counter */
+		struct rdma_counter *counter;
+
+		counter = container_of(res, struct rdma_counter, res);
+		ret = xa_insert(&rt->xa, counter->id, res, GFP_KERNEL);
+		res->id = ret ? 0 : counter->id;
+	} else {
+		ret = xa_alloc_cyclic(&rt->xa, &res->id, res, xa_limit_32b,
+				      &rt->next_id, GFP_KERNEL);
+		ret = (ret < 0) ? ret : 0;
+	}
+
+out:
+	if (!ret)
+		res->valid = true;
 }
 EXPORT_SYMBOL(rdma_restrack_add);
+
+/**
+ * rdma_restrack_abort_del() - re-add object to the resource tracking database
+ * it can only be used after rdma_restrack_begin_del().
+ * @res:  resource entry
+ */
+void rdma_restrack_abort_del(struct rdma_restrack_entry *res)
+{
+	struct rdma_restrack_root *rt = NULL;
+
+	if (!res->valid)
+		return;
+
+	if (!res->no_track) {
+		rt = res_to_rt(res);
+		if (!rt)
+			return;
+	}
+
+	restrack_restore_res(rt, res);
+}
+EXPORT_SYMBOL(rdma_restrack_abort_del);
 
 int __must_check rdma_restrack_get(struct rdma_restrack_entry *res)
 {
@@ -190,11 +300,40 @@ int __must_check rdma_restrack_get(struct rdma_restrack_entry *res)
 }
 EXPORT_SYMBOL(rdma_restrack_get);
 
+/**
+ * rdma_restrack_get_byid() - translate from ID to restrack object
+ * @dev: IB device
+ * @type: resource track type
+ * @id: ID to take a look
+ *
+ * Return: Pointer to restrack entry or -ENOENT in case of error.
+ */
+struct rdma_restrack_entry *
+rdma_restrack_get_byid(struct ib_device *dev,
+		       enum rdma_restrack_type type, u32 id)
+{
+	struct rdma_restrack_root *rt = &dev->res[type];
+	struct rdma_restrack_entry *res;
+
+	xa_lock(&rt->xa);
+	res = xa_load(&rt->xa, id);
+	if (!res || !rdma_restrack_get(res))
+		res = ERR_PTR(-ENOENT);
+	xa_unlock(&rt->xa);
+
+	return res;
+}
+EXPORT_SYMBOL(rdma_restrack_get_byid);
+
 static void restrack_release(struct kref *kref)
 {
 	struct rdma_restrack_entry *res;
 
 	res = container_of(kref, struct rdma_restrack_entry, kref);
+	if (res->task && !res->valid) {
+		put_task_struct(res->task);
+		res->task = NULL;
+	}
 	complete(&res->comp);
 }
 
@@ -204,26 +343,122 @@ int rdma_restrack_put(struct rdma_restrack_entry *res)
 }
 EXPORT_SYMBOL(rdma_restrack_put);
 
+/**
+ * rdma_restrack_sync() - Fence concurrent netlink dumps on an entry
+ * @res:  resource entry
+ *
+ * After this returns any concurrent netlink dump threads will see the current
+ * value of the object. This is useful if the object has to be changed and there
+ * is not locking to protect the nl side. Eg for mr->pd. This effectively
+ * destroys the object from a kref/xarray perspective and then immediately
+ * restores it. The kref is acting like a lock to barrier concurrent nl threads.
+ * Callers must ensure rdma_restrack_del() is not concurrently called.
+ */
+void rdma_restrack_sync(struct rdma_restrack_entry *res)
+{
+	struct rdma_restrack_root *rt;
+
+	if (!res->valid || res->no_track)
+		return;
+
+	rt = res_to_rt(res);
+	if (!rt)
+		return;
+
+	if (WARN_ON(xa_get_mark(&rt->xa, res->id, RESTRACK_DD)))
+		return;
+
+	restrack_drain_res(rt, res);
+	restrack_restore_res(rt, res);
+}
+EXPORT_SYMBOL(rdma_restrack_sync);
+
+/**
+ * rdma_restrack_del() - delete object from the resource tracking database
+ * @res:  resource entry
+ */
 void rdma_restrack_del(struct rdma_restrack_entry *res)
 {
-	struct ib_device *dev;
+	struct rdma_restrack_entry *old;
+	struct rdma_restrack_root *rt;
+
+	if (!res->valid) {
+		if (res->task) {
+			put_task_struct(res->task);
+			res->task = NULL;
+		}
+		return;
+	}
+
+	if (res->no_track)
+		goto out;
+
+	rt = res_to_rt(res);
+	if (!rt)
+		return;
+
+	old = xa_erase(&rt->xa, res->id);
+	WARN_ON(old != res);
+
+out:
+	res->valid = false;
+	rdma_restrack_put(res);
+	wait_for_completion(&res->comp);
+	if (res->task) {
+		put_task_struct(res->task);
+		res->task = NULL;
+	}
+}
+EXPORT_SYMBOL(rdma_restrack_del);
+
+/**
+ * rdma_restrack_begin_del() - invalidate the object from the resource tracking
+ * database but preserve its index in the array.
+ * Since this preserves the index in the array until rdma_restrack_commit_del()
+ * is called, if rdma_restrack_add() is called in between with an old QP ID it
+ * can result in an untracked QP.
+ * @res:  resource entry
+ */
+void rdma_restrack_begin_del(struct rdma_restrack_entry *res)
+{
+	struct rdma_restrack_root *rt = NULL;
 
 	if (!res->valid)
 		return;
 
-	dev = res_to_dev(res);
-	if (!dev)
+	if (!res->no_track) {
+		rt = res_to_rt(res);
+		if (!rt)
+			return;
+	}
+
+	restrack_drain_res(rt, res);
+}
+EXPORT_SYMBOL(rdma_restrack_begin_del);
+
+/**
+ * rdma_restrack_commit_del() - delete object from the resource tracking
+ * database and free the task.
+ * @res:  resource entry
+ */
+void rdma_restrack_commit_del(struct rdma_restrack_entry *res)
+{
+	struct rdma_restrack_root *rt;
+
+	if (!res->valid || res->no_track)
+		goto out;
+
+	rt = res_to_rt(res);
+	if (!rt)
 		return;
 
-	rdma_restrack_put(res);
+	xa_erase(&rt->xa, res->id);
 
-	wait_for_completion(&res->comp);
-
-	down_write(&dev->res.rwsem);
-	hash_del(&res->node);
+out:
 	res->valid = false;
-	if (res->task)
+	if (res->task) {
 		put_task_struct(res->task);
-	up_write(&dev->res.rwsem);
+		res->task = NULL;
+	}
 }
-EXPORT_SYMBOL(rdma_restrack_del);
+EXPORT_SYMBOL(rdma_restrack_commit_del);

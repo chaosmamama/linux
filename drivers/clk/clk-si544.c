@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Driver for Silicon Labs Si544 Programmable Oscillator
+ * Driver for Silicon Labs Si544/Si549 Programmable Oscillator
  * Copyright (C) 2018 Topic Embedded Products
  * Author: Mike Looijmans <mike.looijmans@topic.nl>
  */
 
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
@@ -38,8 +39,10 @@
 /* Max freq depends on speed grade */
 #define SI544_MIN_FREQ	    200000U
 
-/* Si544 Internal oscilator runs at 55.05 MHz */
-#define FXO		  55050000U
+/* Si544 Internal oscillator runs at 55.05 MHz */
+#define SI544_XO_FREQ	55050000U
+/* Si549 Internal oscilator runs at 152.60 MHz */
+#define SI549_XO_FREQ	152600000U
 
 /* VCO range is 10.8 .. 12.1 GHz, max depends on speed grade */
 #define FVCO_MIN       10800000000ULL
@@ -50,17 +53,21 @@
 /* Lowest frequency synthesizeable using only the HS divider */
 #define MIN_HSDIV_FREQ	(FVCO_MIN / HS_DIV_MAX)
 
-enum si544_speed_grade {
-	si544a,
-	si544b,
-	si544c,
+/* Range and interpretation of the adjustment value */
+#define DELTA_M_MAX	8161512
+#define DELTA_M_FRAC_NUM	19
+#define DELTA_M_FRAC_DEN	20000
+
+struct si544_clk_desc {
+	unsigned long max_freq;
+	unsigned long xo_freq;
 };
 
 struct clk_si544 {
 	struct clk_hw hw;
 	struct regmap *regmap;
 	struct i2c_client *i2c_client;
-	enum si544_speed_grade speed_grade;
+	const struct si544_clk_desc *chip_info;
 };
 #define to_clk_si544(_hw)	container_of(_hw, struct clk_si544, hw)
 
@@ -71,12 +78,15 @@ struct clk_si544 {
  * @hs_div:		1st divider, 5..2046, must be even when >33
  * @ls_div_bits:	2nd divider, as 2^x, range 0..5
  *                      If ls_div_bits is non-zero, hs_div must be even
+ * @delta_m:		Frequency shift for small -950..+950 ppm changes, 24 bit
  */
 struct clk_si544_muldiv {
 	u32 fb_div_frac;
 	u16 fb_div_int;
 	u16 hs_div;
 	u8 ls_div_bits;
+	s32 delta_m;
+	u32 xo_freq;
 };
 
 /* Enables or disables the output driver */
@@ -84,6 +94,33 @@ static int si544_enable_output(struct clk_si544 *data, bool enable)
 {
 	return regmap_update_bits(data->regmap, SI544_REG_OE_STATE,
 		SI544_OE_STATE_ODC_OE, enable ? SI544_OE_STATE_ODC_OE : 0);
+}
+
+static int si544_prepare(struct clk_hw *hw)
+{
+	struct clk_si544 *data = to_clk_si544(hw);
+
+	return si544_enable_output(data, true);
+}
+
+static void si544_unprepare(struct clk_hw *hw)
+{
+	struct clk_si544 *data = to_clk_si544(hw);
+
+	si544_enable_output(data, false);
+}
+
+static int si544_is_prepared(struct clk_hw *hw)
+{
+	struct clk_si544 *data = to_clk_si544(hw);
+	unsigned int val;
+	int err;
+
+	err = regmap_read(data->regmap, SI544_REG_OE_STATE, &val);
+	if (err < 0)
+		return err;
+
+	return !!(val & SI544_OE_STATE_ODC_OE);
 }
 
 /* Retrieve clock multiplier and dividers from hardware */
@@ -107,7 +144,30 @@ static int si544_get_muldiv(struct clk_si544 *data,
 	settings->fb_div_int = reg[4] | (reg[5] & 0x07) << 8;
 	settings->fb_div_frac = reg[0] | reg[1] << 8 | reg[2] << 16 |
 				reg[3] << 24;
+
+	err = regmap_bulk_read(data->regmap, SI544_REG_ADPLL_DELTA_M0, reg, 3);
+	if (err)
+		return err;
+
+	/* Interpret as 24-bit signed number */
+	settings->delta_m = reg[0] << 8 | reg[1] << 16 | reg[2] << 24;
+	settings->delta_m >>= 8;
+
+	settings->xo_freq = data->chip_info->xo_freq;
+
 	return 0;
+}
+
+static int si544_set_delta_m(struct clk_si544 *data, s32 delta_m)
+{
+	u8 reg[3];
+
+	reg[0] = delta_m;
+	reg[1] = delta_m >> 8;
+	reg[2] = delta_m >> 16;
+
+	return regmap_bulk_write(data->regmap, SI544_REG_ADPLL_DELTA_M0,
+				 reg, 3);
 }
 
 static int si544_set_muldiv(struct clk_si544 *data,
@@ -140,24 +200,10 @@ static int si544_set_muldiv(struct clk_si544 *data,
 static bool is_valid_frequency(const struct clk_si544 *data,
 	unsigned long frequency)
 {
-	unsigned long max_freq = 0;
-
 	if (frequency < SI544_MIN_FREQ)
 		return false;
 
-	switch (data->speed_grade) {
-	case si544a:
-		max_freq = 1500000000;
-		break;
-	case si544b:
-		max_freq = 800000000;
-		break;
-	case si544c:
-		max_freq = 350000000;
-		break;
-	}
-
-	return frequency <= max_freq;
+	return frequency <= data->chip_info->max_freq;
 }
 
 /* Calculate divider settings for a given frequency */
@@ -165,6 +211,7 @@ static int si544_calc_muldiv(struct clk_si544_muldiv *settings,
 	unsigned long frequency)
 {
 	u64 vco;
+	u32 fxo = settings->xo_freq;
 	u32 ls_freq;
 	u32 tmp;
 	u8 res;
@@ -202,36 +249,60 @@ static int si544_calc_muldiv(struct clk_si544_muldiv *settings,
 	vco = (u64)ls_freq * settings->hs_div;
 
 	/* Calculate the integer part of the feedback divider */
-	tmp = do_div(vco, FXO);
+	tmp = do_div(vco, fxo);
 	settings->fb_div_int = vco;
 
 	/* And the fractional bits using the remainder */
 	vco = (u64)tmp << 32;
-	vco += FXO / 2; /* Round to nearest multiple */
-	do_div(vco, FXO);
+	vco += fxo / 2; /* Round to nearest multiple */
+	do_div(vco, fxo);
 	settings->fb_div_frac = vco;
+
+	/* Reset the frequency adjustment */
+	settings->delta_m = 0;
 
 	return 0;
 }
 
 /* Calculate resulting frequency given the register settings */
-static unsigned long si544_calc_rate(struct clk_si544_muldiv *settings)
+static unsigned long si544_calc_center_rate(
+		const struct clk_si544_muldiv *settings)
 {
 	u32 d = settings->hs_div * BIT(settings->ls_div_bits);
+	u32 fxo = settings->xo_freq;
 	u64 vco;
 
 	/* Calculate VCO from the fractional part */
-	vco = (u64)settings->fb_div_frac * FXO;
-	vco += (FXO / 2);
+	vco = (u64)settings->fb_div_frac * fxo;
+	vco += (fxo / 2);
 	vco >>= 32;
 
 	/* Add the integer part of the VCO frequency */
-	vco += (u64)settings->fb_div_int * FXO;
+	vco += (u64)settings->fb_div_int * fxo;
 
 	/* Apply divider to obtain the generated frequency */
 	do_div(vco, d);
 
 	return vco;
+}
+
+static unsigned long si544_calc_rate(const struct clk_si544_muldiv *settings)
+{
+	unsigned long rate = si544_calc_center_rate(settings);
+	s64 delta = (s64)rate * (DELTA_M_FRAC_NUM * settings->delta_m);
+
+	/*
+	 * The clock adjustment is much smaller than 1 Hz, round to the
+	 * nearest multiple. Apparently div64_s64 rounds towards zero, hence
+	 * check the sign and adjust into the proper direction.
+	 */
+	if (settings->delta_m < 0)
+		delta -= ((s64)DELTA_M_MAX * DELTA_M_FRAC_DEN) / 2;
+	else
+		delta += ((s64)DELTA_M_MAX * DELTA_M_FRAC_DEN) / 2;
+	delta = div64_s64(delta, ((s64)DELTA_M_MAX * DELTA_M_FRAC_DEN));
+
+	return rate + delta;
 }
 
 static unsigned long si544_recalc_rate(struct clk_hw *hw,
@@ -248,37 +319,69 @@ static unsigned long si544_recalc_rate(struct clk_hw *hw,
 	return si544_calc_rate(&settings);
 }
 
-static long si544_round_rate(struct clk_hw *hw, unsigned long rate,
-		unsigned long *parent_rate)
+static int si544_determine_rate(struct clk_hw *hw,
+				struct clk_rate_request *req)
 {
 	struct clk_si544 *data = to_clk_si544(hw);
-	struct clk_si544_muldiv settings;
-	int err;
 
-	if (!is_valid_frequency(data, rate))
+	if (!is_valid_frequency(data, req->rate))
 		return -EINVAL;
 
-	err = si544_calc_muldiv(&settings, rate);
-	if (err)
-		return err;
-
-	return si544_calc_rate(&settings);
+	/* The accuracy is less than 1 Hz, so any rate is possible */
+	return 0;
 }
 
-/*
- * Update output frequency for "big" frequency changes
- */
+/* Calculates the maximum "small" change, 950 * rate / 1000000 */
+static unsigned long si544_max_delta(unsigned long rate)
+{
+	u64 num = rate;
+
+	num *= DELTA_M_FRAC_NUM;
+	do_div(num, DELTA_M_FRAC_DEN);
+
+	return num;
+}
+
+static s32 si544_calc_delta(s32 delta, s32 max_delta)
+{
+	s64 n = (s64)delta * DELTA_M_MAX;
+
+	return div_s64(n, max_delta);
+}
+
 static int si544_set_rate(struct clk_hw *hw, unsigned long rate,
 		unsigned long parent_rate)
 {
 	struct clk_si544 *data = to_clk_si544(hw);
 	struct clk_si544_muldiv settings;
+	unsigned long center;
+	long max_delta;
+	long delta;
+	unsigned int old_oe_state;
 	int err;
 
 	if (!is_valid_frequency(data, rate))
 		return -EINVAL;
 
+	/* Try using the frequency adjustment feature for a <= 950ppm change */
+	err = si544_get_muldiv(data, &settings);
+	if (err)
+		return err;
+
+	center = si544_calc_center_rate(&settings);
+	max_delta = si544_max_delta(center);
+	delta = rate - center;
+
+	if (abs(delta) <= max_delta)
+		return si544_set_delta_m(data,
+					 si544_calc_delta(delta, max_delta));
+
+	/* Too big for the delta adjustment, need to reprogram */
 	err = si544_calc_muldiv(&settings, rate);
+	if (err)
+		return err;
+
+	err = regmap_read(data->regmap, SI544_REG_OE_STATE, &old_oe_state);
 	if (err)
 		return err;
 
@@ -289,6 +392,9 @@ static int si544_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (err < 0)
 		return err;
 
+	err = si544_set_delta_m(data, settings.delta_m);
+	if (err < 0)
+		return err;
 
 	err = si544_set_muldiv(data, &settings);
 	if (err < 0)
@@ -303,14 +409,18 @@ static int si544_set_rate(struct clk_hw *hw, unsigned long rate,
 	/* Applying a new frequency can take up to 10ms */
 	usleep_range(10000, 12000);
 
-	si544_enable_output(data, true);
+	if (old_oe_state & SI544_OE_STATE_ODC_OE)
+		si544_enable_output(data, true);
 
 	return err;
 }
 
 static const struct clk_ops si544_clk_ops = {
+	.prepare = si544_prepare,
+	.unprepare = si544_unprepare,
+	.is_prepared = si544_is_prepared,
 	.recalc_rate = si544_recalc_rate,
-	.round_rate = si544_round_rate,
+	.determine_rate = si544_determine_rate,
 	.set_rate = si544_set_rate,
 };
 
@@ -328,13 +438,12 @@ static bool si544_regmap_is_volatile(struct device *dev, unsigned int reg)
 static const struct regmap_config si544_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_MAPLE,
 	.max_register = SI544_REG_PAGE_SELECT,
 	.volatile_reg = si544_regmap_is_volatile,
 };
 
-static int si544_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int si544_probe(struct i2c_client *client)
 {
 	struct clk_si544 *data;
 	struct clk_init_data init;
@@ -349,7 +458,7 @@ static int si544_probe(struct i2c_client *client,
 	init.num_parents = 0;
 	data->hw.init = &init;
 	data->i2c_client = client;
-	data->speed_grade = id->driver_data;
+	data->chip_info = i2c_get_match_data(client);
 
 	if (of_property_read_string(client->dev.of_node, "clock-output-names",
 			&init.name))
@@ -381,19 +490,55 @@ static int si544_probe(struct i2c_client *client,
 	return 0;
 }
 
+static const struct si544_clk_desc clk_si544a_info = {
+	.xo_freq = SI544_XO_FREQ,
+	.max_freq = 1500000000,
+};
+
+static const struct si544_clk_desc clk_si544b_info = {
+	.xo_freq = SI544_XO_FREQ,
+	.max_freq = 800000000,
+};
+
+static const struct si544_clk_desc clk_si544c_info = {
+	.xo_freq = SI544_XO_FREQ,
+	.max_freq = 325000000,
+};
+
+static const struct si544_clk_desc clk_si549a_info = {
+	.xo_freq = SI549_XO_FREQ,
+	.max_freq = 1500000000,
+};
+
+static const struct si544_clk_desc clk_si549b_info = {
+	.xo_freq = SI549_XO_FREQ,
+	.max_freq = 800000000,
+};
+
+static const struct si544_clk_desc clk_si549c_info = {
+	.xo_freq = SI549_XO_FREQ,
+	.max_freq = 325000000,
+};
+
 static const struct i2c_device_id si544_id[] = {
-	{ "si544a", si544a },
-	{ "si544b", si544b },
-	{ "si544c", si544c },
+	{ .name = "si544a", .driver_data = (kernel_ulong_t)&clk_si544a_info },
+	{ .name = "si544b", .driver_data = (kernel_ulong_t)&clk_si544b_info },
+	{ .name = "si544c", .driver_data = (kernel_ulong_t)&clk_si544c_info },
+	{ .name = "si549a", .driver_data = (kernel_ulong_t)&clk_si549a_info },
+	{ .name = "si549b", .driver_data = (kernel_ulong_t)&clk_si549b_info },
+	{ .name = "si549c", .driver_data = (kernel_ulong_t)&clk_si549c_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, si544_id);
 
 static const struct of_device_id clk_si544_of_match[] = {
-	{ .compatible = "silabs,si544a" },
-	{ .compatible = "silabs,si544b" },
-	{ .compatible = "silabs,si544c" },
-	{ },
+	{ .compatible = "silabs,si544a", .data = &clk_si544a_info },
+	{ .compatible = "silabs,si544b", .data = &clk_si544b_info },
+	{ .compatible = "silabs,si544c", .data = &clk_si544c_info },
+	{ .compatible = "silabs,si549a", .data = &clk_si549a_info },
+	{ .compatible = "silabs,si549b", .data = &clk_si549b_info },
+	{ .compatible = "silabs,si549c", .data = &clk_si549c_info },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, clk_si544_of_match);
 

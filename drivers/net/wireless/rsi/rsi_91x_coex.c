@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2018 Redpine Signals Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -50,10 +50,10 @@ static void rsi_coex_sched_tx_pkts(struct rsi_coex_ctrl_block *coex_cb)
 	} while (coex_q != RSI_COEX_Q_INVALID);
 }
 
-static void rsi_coex_scheduler_thread(struct rsi_common *common)
+static int rsi_coex_scheduler_thread(void *data)
 {
-	struct rsi_coex_ctrl_block *coex_cb =
-		(struct rsi_coex_ctrl_block *)common->coex_cb;
+	struct rsi_common *common = data;
+	struct rsi_coex_ctrl_block *coex_cb = common->coex_cb;
 	u32 timeout = EVENT_WAIT_FOREVER;
 
 	do {
@@ -63,7 +63,7 @@ static void rsi_coex_scheduler_thread(struct rsi_common *common)
 		rsi_coex_sched_tx_pkts(coex_cb);
 	} while (atomic_read(&coex_cb->coex_tx_thread.thread_done) == 0);
 
-	complete_and_exit(&coex_cb->coex_tx_thread.completion, 0);
+	kthread_complete_and_exit(&coex_cb->coex_tx_thread.completion, 0);
 }
 
 int rsi_coex_recv_pkt(struct rsi_common *common, u8 *msg)
@@ -100,9 +100,8 @@ static inline int rsi_map_coex_q(u8 hal_queue)
 
 int rsi_coex_send_pkt(void *priv, struct sk_buff *skb, u8 hal_queue)
 {
-	struct rsi_common *common = (struct rsi_common *)priv;
-	struct rsi_coex_ctrl_block *coex_cb =
-		(struct rsi_coex_ctrl_block *)common->coex_cb;
+	struct rsi_common *common = priv;
+	struct rsi_coex_ctrl_block *coex_cb = common->coex_cb;
 	struct skb_info *tx_params = NULL;
 	enum rsi_coex_queues coex_q;
 	int status;
@@ -142,7 +141,7 @@ int rsi_coex_attach(struct rsi_common *common)
 	struct rsi_coex_ctrl_block *coex_cb;
 	int cnt;
 
-	coex_cb = kzalloc(sizeof(*coex_cb), GFP_KERNEL);
+	coex_cb = kzalloc_obj(*coex_cb);
 	if (!coex_cb)
 		return -ENOMEM;
 
@@ -160,6 +159,7 @@ int rsi_coex_attach(struct rsi_common *common)
 			       rsi_coex_scheduler_thread,
 			       "Coex-Tx-Thread")) {
 		rsi_dbg(ERR_ZONE, "%s: Unable to init tx thrd\n", __func__);
+		kfree(coex_cb);
 		return -EINVAL;
 	}
 	return 0;
@@ -167,8 +167,7 @@ int rsi_coex_attach(struct rsi_common *common)
 
 void rsi_coex_detach(struct rsi_common *common)
 {
-	struct rsi_coex_ctrl_block *coex_cb =
-		(struct rsi_coex_ctrl_block *)common->coex_cb;
+	struct rsi_coex_ctrl_block *coex_cb = common->coex_cb;
 	int cnt;
 
 	rsi_kill_thread(&coex_cb->coex_tx_thread);

@@ -31,19 +31,6 @@
 		      "dclkin.0", "dclkin.1", "dclkin.3";
 };
 
-&hdmi0 {
+&gpu {
 	status = "okay";
-
-	ports {
-		port@1 {
-			reg = <1>;
-			rcar_dw_hdmi0_out: endpoint {
-				remote-endpoint = <&hdmi0_con>;
-			};
-		};
-	};
-};
-
-&hdmi0_con {
-	remote-endpoint = <&rcar_dw_hdmi0_out>;
 };

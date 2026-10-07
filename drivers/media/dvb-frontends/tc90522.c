@@ -21,7 +21,7 @@
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/dvb/frontend.h>
-#include <media/dvb_math.h>
+#include <linux/int_log.h>
 #include "tc90522.h"
 
 #define TC90522_I2C_THRU_REG 0xfe
@@ -647,7 +647,7 @@ tc90522_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	for (i = 0; i < num; i++)
 		if (msgs[i].flags & I2C_M_RD)
 			rd_num++;
-	new_msgs = kmalloc_array(num + rd_num, sizeof(*new_msgs), GFP_KERNEL);
+	new_msgs = kmalloc_objs(*new_msgs, num + rd_num);
 	if (!new_msgs)
 		return -ENOMEM;
 
@@ -685,10 +685,33 @@ tc90522_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 		p += new_msgs[j].len;
 	}
 
-	if (i < num)
+	if (i < num) {
 		ret = -ENOMEM;
-	else
+	} else if (!state->cfg.split_tuner_read_i2c || rd_num == 0) {
 		ret = i2c_transfer(state->i2c_client->adapter, new_msgs, j);
+	} else {
+		/*
+		 * Split transactions at each I2C_M_RD message.
+		 * Some of the parent device require this,
+		 * such as Friio (see. dvb-usb-gl861).
+		 */
+		int from, to;
+
+		ret = 0;
+		from = 0;
+		do {
+			int r;
+
+			to = from + 1;
+			while (to < j && !(new_msgs[to].flags & I2C_M_RD))
+				to++;
+			r = i2c_transfer(state->i2c_client->adapter,
+					 &new_msgs[from], to - from);
+			ret = (r <= 0) ? r : ret + r;
+			from = to;
+		} while (from < j && ret > 0);
+	}
+
 	if (ret >= 0 && ret < j)
 		ret = -EIO;
 	kfree(new_msgs);
@@ -714,8 +737,8 @@ static const struct dvb_frontend_ops tc90522_ops_sat = {
 	.delsys = { SYS_ISDBS },
 	.info = {
 		.name = "Toshiba TC90522 ISDB-S module",
-		.frequency_min =  950000,
-		.frequency_max = 2150000,
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
 		.caps = FE_CAN_INVERSION_AUTO | FE_CAN_FEC_AUTO |
 			FE_CAN_QAM_AUTO | FE_CAN_TRANSMISSION_MODE_AUTO |
 			FE_CAN_GUARD_INTERVAL_AUTO | FE_CAN_HIERARCHY_AUTO,
@@ -734,9 +757,9 @@ static const struct dvb_frontend_ops tc90522_ops_ter = {
 	.delsys = { SYS_ISDBT },
 	.info = {
 		.name = "Toshiba TC90522 ISDB-T module",
-		.frequency_min = 470000000,
-		.frequency_max = 770000000,
-		.frequency_stepsize = 142857,
+		.frequency_min_hz = 470 * MHz,
+		.frequency_max_hz = 770 * MHz,
+		.frequency_stepsize_hz = 142857,
 		.caps = FE_CAN_INVERSION_AUTO |
 			FE_CAN_FEC_1_2  | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 			FE_CAN_FEC_5_6  | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
@@ -756,16 +779,16 @@ static const struct dvb_frontend_ops tc90522_ops_ter = {
 };
 
 
-static int tc90522_probe(struct i2c_client *client,
-			 const struct i2c_device_id *id)
+static int tc90522_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct tc90522_state *state;
 	struct tc90522_config *cfg;
 	const struct dvb_frontend_ops *ops;
 	struct i2c_adapter *adap;
 	int ret;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
+	state = kzalloc_obj(*state);
 	if (!state)
 		return -ENOMEM;
 	state->i2c_client = client;
@@ -781,7 +804,7 @@ static int tc90522_probe(struct i2c_client *client,
 	adap->owner = THIS_MODULE;
 	adap->algo = &tc90522_tuner_i2c_algo;
 	adap->dev.parent = &client->dev;
-	strlcpy(adap->name, "tc90522_sub", sizeof(adap->name));
+	strscpy(adap->name, "tc90522_sub", sizeof(adap->name));
 	i2c_set_adapdata(adap, state);
 	ret = i2c_add_adapter(adap);
 	if (ret < 0)
@@ -796,21 +819,20 @@ free_state:
 	return ret;
 }
 
-static int tc90522_remove(struct i2c_client *client)
+static void tc90522_remove(struct i2c_client *client)
 {
 	struct tc90522_state *state;
 
 	state = cfg_to_state(i2c_get_clientdata(client));
 	i2c_del_adapter(&state->tuner_i2c);
 	kfree(state);
-	return 0;
 }
 
 
 static const struct i2c_device_id tc90522_id[] = {
-	{ TC90522_I2C_DEV_SAT, 0 },
-	{ TC90522_I2C_DEV_TER, 1 },
-	{}
+	{ .name = TC90522_I2C_DEV_SAT, .driver_data = 0 },
+	{ .name = TC90522_I2C_DEV_TER, .driver_data = 1 },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tc90522_id);
 

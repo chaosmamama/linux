@@ -1,13 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Broadcom Brahma-B15 CPU read-ahead cache management functions
  *
  * Copyright (C) 2015-2016 Broadcom
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
+#include <linux/cfi_types.h>
 #include <linux/err.h>
 #include <linux/spinlock.h>
 #include <linux/io.h>
@@ -77,7 +75,7 @@ static inline void __b15_rac_flush(void)
 	__raw_writel(FLUSH_RAC, b15_rac_base + rac_flush_offset);
 	do {
 		/* This dmb() is required to force the Bus Interface Unit
-		 * to clean oustanding writes, and forces an idle cycle
+		 * to clean outstanding writes, and forces an idle cycle
 		 * to be inserted.
 		 */
 		dmb();
@@ -258,7 +256,7 @@ static int b15_rac_dead_cpu(unsigned int cpu)
 	return 0;
 }
 
-static int b15_rac_suspend(void)
+static int b15_rac_suspend(void *data)
 {
 	/* Suspend the read-ahead cache oeprations, forcing our cache
 	 * implementation to fallback to the regular ARMv7 calls.
@@ -273,7 +271,7 @@ static int b15_rac_suspend(void)
 	return 0;
 }
 
-static void b15_rac_resume(void)
+static void b15_rac_resume(void *data)
 {
 	/* Coming out of a S3 suspend/resume cycle, the read-ahead cache
 	 * register RAC_CONFIG0_REG will be restored to its default value, make
@@ -284,9 +282,13 @@ static void b15_rac_resume(void)
 	clear_bit(RAC_SUSPENDED, &b15_rac_flags);
 }
 
-static struct syscore_ops b15_rac_syscore_ops = {
+static const struct syscore_ops b15_rac_syscore_ops = {
 	.suspend	= b15_rac_suspend,
 	.resume		= b15_rac_resume,
+};
+
+static struct syscore b15_rac_syscore = {
+	.ops = &b15_rac_syscore_ops,
 };
 
 static int __init b15_rac_init(void)
@@ -349,7 +351,7 @@ static int __init b15_rac_init(void)
 	}
 
 	if (IS_ENABLED(CONFIG_PM_SLEEP))
-		register_syscore_ops(&b15_rac_syscore_ops);
+		register_syscore(&b15_rac_syscore);
 
 	spin_lock(&rac_lock);
 	reg = __raw_readl(b15_rac_base + RAC_CONFIG0_REG);
@@ -361,8 +363,7 @@ static int __init b15_rac_init(void)
 	set_bit(RAC_ENABLED, &b15_rac_flags);
 	spin_unlock(&rac_lock);
 
-	pr_info("Broadcom Brahma-B15 readahead cache at: 0x%p\n",
-		b15_rac_base + RAC_CONFIG0_REG);
+	pr_info("%pOF: Broadcom Brahma-B15 readahead cache\n", dn);
 
 	goto out;
 

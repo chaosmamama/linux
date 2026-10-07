@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * rt274.c  --  RT274 ALSA SoC audio codec driver
  *
  * Copyright 2017 Realtek Semiconductor Corp.
  * Author: Bard Liao <bardliao@realtek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -187,8 +184,10 @@ static const struct reg_default rt274_reg[] = {
 	{ 0x0023a000, 0x00000057 },
 	{ 0x00270500, 0x00000400 },
 	{ 0x00370500, 0x00000400 },
+	{ 0x00830000, 0x00000097 },
 	{ 0x00870500, 0x00000400 },
 	{ 0x00920000, 0x00000031 },
+	{ 0x00930000, 0x00000097 },
 	{ 0x00935000, 0x00000097 },
 	{ 0x00936000, 0x00000097 },
 	{ 0x00970500, 0x00000400 },
@@ -198,10 +197,12 @@ static const struct reg_default rt274_reg[] = {
 	{ 0x00c37000, 0x00000400 },
 	{ 0x00c37100, 0x00000400 },
 	{ 0x01270500, 0x00000400 },
+	{ 0x01270700, 0x00000000 },
 	{ 0x01370500, 0x00000400 },
 	{ 0x01371f00, 0x411111f0 },
 	{ 0x01937000, 0x00000000 },
 	{ 0x01970500, 0x00000400 },
+	{ 0x01970700, 0x00000020 },
 	{ 0x02050000, 0x0000001b },
 	{ 0x02139000, 0x00000080 },
 	{ 0x0213a000, 0x00000080 },
@@ -210,10 +211,6 @@ static const struct reg_default rt274_reg[] = {
 	{ 0x02170700, 0x00000000 },
 	{ 0x02270100, 0x00000000 },
 	{ 0x02370100, 0x00000000 },
-	{ 0x01970700, 0x00000020 },
-	{ 0x00830000, 0x00000097 },
-	{ 0x00930000, 0x00000097 },
-	{ 0x01270700, 0x00000000 },
 };
 
 static bool rt274_volatile_register(struct device *dev, unsigned int reg)
@@ -353,6 +350,7 @@ static void rt274_index_sync(struct snd_soc_component *component)
 static int rt274_jack_detect(struct rt274_priv *rt274, bool *hp, bool *mic)
 {
 	unsigned int buf;
+	int ret;
 
 	*hp = false;
 	*mic = false;
@@ -360,9 +358,15 @@ static int rt274_jack_detect(struct rt274_priv *rt274, bool *hp, bool *mic)
 	if (!rt274->component)
 		return -EINVAL;
 
-	regmap_read(rt274->regmap, RT274_GET_HP_SENSE, &buf);
+	ret = regmap_read(rt274->regmap, RT274_GET_HP_SENSE, &buf);
+	if (ret)
+		return ret;
+
 	*hp = buf & 0x80000000;
-	regmap_read(rt274->regmap, RT274_GET_MIC_SENSE, &buf);
+	ret = regmap_read(rt274->regmap, RT274_GET_MIC_SENSE, &buf);
+	if (ret)
+		return ret;
+
 	*mic = buf & 0x80000000;
 
 	pr_debug("*hp = %d *mic = %d\n", *hp, *mic);
@@ -381,10 +385,10 @@ static void rt274_jack_detect_work(struct work_struct *work)
 	if (rt274_jack_detect(rt274, &hp, &mic) < 0)
 		return;
 
-	if (hp == true)
+	if (hp)
 		status |= SND_JACK_HEADPHONE;
 
-	if (mic == true)
+	if (mic)
 		status |= SND_JACK_MICROPHONE;
 
 	snd_soc_jack_report(rt274->jack, status,
@@ -398,6 +402,8 @@ static int rt274_mic_detect(struct snd_soc_component *component,
 {
 	struct rt274_priv *rt274 = snd_soc_component_get_drvdata(component);
 
+	rt274->jack = jack;
+
 	if (jack == NULL) {
 		/* Disable jack detection */
 		regmap_update_bits(rt274->regmap, RT274_EAPD_GPIO_IRQ_CTRL,
@@ -405,7 +411,6 @@ static int rt274_mic_detect(struct snd_soc_component *component,
 
 		return 0;
 	}
-	rt274->jack = jack;
 
 	regmap_update_bits(rt274->regmap, RT274_EAPD_GPIO_IRQ_CTRL,
 				RT274_IRQ_EN, RT274_IRQ_EN);
@@ -614,9 +619,11 @@ static int rt274_hw_params(struct snd_pcm_substream *substream,
 	unsigned int val = 0;
 	int d_len_code = 0, c_len_code = 0;
 
+	/* bit 14 Sample Rate Base, 0: 48kHz 1: 44.1kHz */
 	switch (params_rate(params)) {
-	/* bit 14 0:48K 1:44.1K */
 	case 44100:
+		val |= BIT(14);
+		break;
 	case 48000:
 		break;
 	default:
@@ -701,12 +708,12 @@ static int rt274_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct rt274_priv *rt274 = snd_soc_component_get_drvdata(component);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBM_CFM:
+	case SND_SOC_DAIFMT_CBP_CFP:
 		snd_soc_component_update_bits(component,
 			RT274_I2S_CTRL1, RT274_I2S_MODE_MASK, RT274_I2S_MODE_M);
 		rt274->master = true;
 		break;
-	case SND_SOC_DAIFMT_CBS_CFS:
+	case SND_SOC_DAIFMT_CBC_CFC:
 		snd_soc_component_update_bits(component,
 			RT274_I2S_CTRL1, RT274_I2S_MODE_MASK, RT274_I2S_MODE_S);
 		rt274->master = false;
@@ -755,6 +762,7 @@ static int rt274_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 		break;
 	default:
 		dev_warn(component->dev, "invalid pll source, use BCLK\n");
+		fallthrough;
 	case RT274_PLL2_S_BCLK:
 		snd_soc_component_update_bits(component, RT274_PLL2_CTRL,
 				RT274_PLL2_SRC_MASK, RT274_PLL2_SRC_BCLK);
@@ -782,6 +790,7 @@ static int rt274_set_dai_pll(struct snd_soc_dai *dai, int pll_id, int source,
 			break;
 		default:
 			dev_warn(component->dev, "invalid freq_in, assume 4.8M\n");
+			fallthrough;
 		case 100:
 			snd_soc_component_write(component, 0x7a, 0xaab6);
 			snd_soc_component_write(component, 0x7b, 0x0301);
@@ -918,10 +927,11 @@ static int rt274_set_tdm_slot(struct snd_soc_dai *dai, unsigned int tx_mask,
 static int rt274_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+
 	switch (level) {
 	case SND_SOC_BIAS_PREPARE:
-		if (SND_SOC_BIAS_STANDBY ==
-			snd_soc_component_get_bias_level(component)) {
+		if (SND_SOC_BIAS_STANDBY == snd_soc_dapm_get_bias_level(dapm)) {
 			snd_soc_component_write(component,
 				RT274_SET_AUDIO_POWER, AC_PWRST_D0);
 		}
@@ -953,10 +963,10 @@ static irqreturn_t rt274_irq(int irq, void *data)
 	ret = rt274_jack_detect(rt274, &hp, &mic);
 
 	if (ret == 0) {
-		if (hp == true)
+		if (hp)
 			status |= SND_JACK_HEADPHONE;
 
-		if (mic == true)
+		if (mic)
 			status |= SND_JACK_MICROPHONE;
 
 		snd_soc_jack_report(rt274->jack, status,
@@ -973,14 +983,11 @@ static int rt274_probe(struct snd_soc_component *component)
 	struct rt274_priv *rt274 = snd_soc_component_get_drvdata(component);
 
 	rt274->component = component;
+	INIT_DELAYED_WORK(&rt274->jack_detect_work, rt274_jack_detect_work);
 
-	if (rt274->i2c->irq) {
-		INIT_DELAYED_WORK(&rt274->jack_detect_work,
-					rt274_jack_detect_work);
+	if (rt274->i2c->irq)
 		schedule_delayed_work(&rt274->jack_detect_work,
-					msecs_to_jiffies(1250));
-	}
-
+				      msecs_to_jiffies(1250));
 	return 0;
 }
 
@@ -989,6 +996,7 @@ static void rt274_remove(struct snd_soc_component *component)
 	struct rt274_priv *rt274 = snd_soc_component_get_drvdata(component);
 
 	cancel_delayed_work_sync(&rt274->jack_detect_work);
+	rt274->component = NULL;
 }
 
 #ifdef CONFIG_PM
@@ -1049,7 +1057,7 @@ static struct snd_soc_dai_driver rt274_dai[] = {
 			.formats = RT274_FORMATS,
 		},
 		.ops = &rt274_aif_dai_ops,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 	},
 };
 
@@ -1068,7 +1076,6 @@ static const struct snd_soc_component_driver soc_component_dev_rt274 = {
 	.num_dapm_routes	= ARRAY_SIZE(rt274_dapm_routes),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 static const struct regmap_config rt274_regmap = {
@@ -1087,26 +1094,27 @@ static const struct regmap_config rt274_regmap = {
 #ifdef CONFIG_OF
 static const struct of_device_id rt274_of_match[] = {
 	{.compatible = "realtek,rt274"},
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(of, rt274_of_match);
 #endif
 
 static const struct i2c_device_id rt274_i2c_id[] = {
-	{"rt274", 0},
-	{}
+	{ .name = "rt274" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt274_i2c_id);
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id rt274_acpi_match[] = {
-	{ "10EC0274", 0 },
-	{ "INT34C2", 0 },
-	{},
+	{ "10EC0274" },
+	{ "INT34C2" },
+	{ }
 };
 MODULE_DEVICE_TABLE(acpi, rt274_acpi_match);
+#endif
 
-static int rt274_i2c_probe(struct i2c_client *i2c,
-			   const struct i2c_device_id *id)
+static int rt274_i2c_probe(struct i2c_client *i2c)
 {
 	struct rt274_priv *rt274;
 
@@ -1126,8 +1134,11 @@ static int rt274_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 
-	regmap_read(rt274->regmap,
+	ret = regmap_read(rt274->regmap,
 		RT274_GET_PARAM(AC_NODE_ROOT, AC_PAR_VENDOR_ID), &val);
+	if (ret)
+		return ret;
+
 	if (val != RT274_VENDOR_ID) {
 		dev_err(&i2c->dev,
 			"Device with ID register %#x is not rt274\n", val);
@@ -1180,11 +1191,11 @@ static int rt274_i2c_probe(struct i2c_client *i2c,
 	regmap_write(rt274->regmap, RT274_UNSOLICITED_MIC, 0x82);
 
 	if (rt274->i2c->irq) {
-		ret = request_threaded_irq(rt274->i2c->irq, NULL, rt274_irq,
+		ret = devm_request_threaded_irq(&rt274->i2c->dev, rt274->i2c->irq, NULL, rt274_irq,
 			IRQF_TRIGGER_HIGH | IRQF_ONESHOT, "rt274", rt274);
 		if (ret != 0) {
 			dev_err(&i2c->dev,
-				"Failed to reguest IRQ: %d\n", ret);
+				"Failed to request IRQ: %d\n", ret);
 			return ret;
 		}
 	}
@@ -1196,17 +1207,6 @@ static int rt274_i2c_probe(struct i2c_client *i2c,
 	return ret;
 }
 
-static int rt274_i2c_remove(struct i2c_client *i2c)
-{
-	struct rt274_priv *rt274 = i2c_get_clientdata(i2c);
-
-	if (i2c->irq)
-		free_irq(i2c->irq, rt274);
-
-	return 0;
-}
-
-
 static struct i2c_driver rt274_i2c_driver = {
 	.driver = {
 		   .name = "rt274",
@@ -1216,7 +1216,6 @@ static struct i2c_driver rt274_i2c_driver = {
 #endif
 		   },
 	.probe = rt274_i2c_probe,
-	.remove = rt274_i2c_remove,
 	.id_table = rt274_i2c_id,
 };
 

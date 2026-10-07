@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2014 Redpine Signals Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
@@ -21,14 +21,15 @@
 /**
  * rsi_usb_rx_thread() - This is a kernel thread to receive the packets from
  *			 the USB device.
- * @common: Pointer to the driver private structure.
+ * @data: Pointer to the driver private structure.
  *
- * Return: None.
+ * Return: 0.
  */
-void rsi_usb_rx_thread(struct rsi_common *common)
+int rsi_usb_rx_thread(void *data)
 {
+	struct rsi_common *common = data;
 	struct rsi_hw *adapter = common->priv;
-	struct rsi_91x_usbdev *dev = (struct rsi_91x_usbdev *)adapter->rsi_dev;
+	struct rsi_91x_usbdev *dev = adapter->rsi_dev;
 	int status;
 	struct sk_buff *skb;
 
@@ -56,6 +57,6 @@ void rsi_usb_rx_thread(struct rsi_common *common)
 out:
 	rsi_dbg(INFO_ZONE, "%s: Terminated thread\n", __func__);
 	skb_queue_purge(&dev->rx_q);
-	complete_and_exit(&dev->rx_thread.completion, 0);
+	kthread_complete_and_exit(&dev->rx_thread.completion, 0);
 }
 

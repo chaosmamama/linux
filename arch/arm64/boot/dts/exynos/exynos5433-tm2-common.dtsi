@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * SAMSUNG Exynos5433 TM2 board device tree source
+ * Samsung Exynos5433 TM2 board device tree source
  *
  * Copyright (c) 2016 Samsung Electronics Co., Ltd.
  *
@@ -21,6 +21,8 @@
 		gsc0 = &gsc_0;
 		gsc1 = &gsc_1;
 		gsc2 = &gsc_2;
+		mmc0 = &mshc_0;
+		mmc2 = &mshc_2;
 		pinctrl0 = &pinctrl_alive;
 		pinctrl1 = &pinctrl_aud;
 		pinctrl2 = &pinctrl_cpif;
@@ -40,8 +42,6 @@
 		spi2 = &spi_2;
 		spi3 = &spi_3;
 		spi4 = &spi_4;
-		mshc0 = &mshc_0;
-		mshc2 = &mshc_2;
 	};
 
 	chosen {
@@ -85,26 +85,32 @@
 		};
 	};
 
-	i2c_max98504: i2c-gpio-0 {
+	i2c_max98504: i2c-13 {
 		compatible = "i2c-gpio";
-		gpios = <&gpd0 1 GPIO_ACTIVE_HIGH /* SPK_AMP_SDA */
-			 &gpd0 0 GPIO_ACTIVE_HIGH /* SPK_AMP_SCL */ >;
+		sda-gpios = <&gpd0 1 GPIO_ACTIVE_HIGH>;
+		scl-gpios = <&gpd0 0 GPIO_ACTIVE_HIGH>;
 		i2c-gpio,delay-us = <2>;
 		#address-cells = <1>;
 		#size-cells = <0>;
-		status = "okay";
 
-		max98504: max98504@31 {
+		max98504: amplifier@31 {
 			compatible = "maxim,max98504";
 			reg = <0x31>;
-			maxim,rx-path = <1>;
-			maxim,tx-path = <1>;
-			maxim,tx-channel-mask = <3>;
-			maxim,tx-channel-source = <2>;
+
+			DIOVDD-supply = <&ldo3_reg>;
+			DVDD-supply = <&ldo3_reg>;
+			PVDD-supply = <&vph_pwr_regulator>;
 		};
 	};
 
-	irda_regulator: irda-regulator {
+	vph_pwr_regulator: regulator-vph-pwr {
+		compatible = "regulator-fixed";
+		regulator-name = "VPH_PWR";
+		regulator-min-microvolt = <4200000>;
+		regulator-max-microvolt = <4200000>;
+	};
+
+	irda_regulator: regulator-irda {
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpr3 3 GPIO_ACTIVE_HIGH>;
@@ -118,25 +124,24 @@
 		audio-amplifier = <&max98504>;
 		mic-bias-gpios = <&gpr3 2 GPIO_ACTIVE_HIGH>;
 		model = "wm5110";
-		samsung,audio-routing =
-			/* Headphone */
-			"HP", "HPOUT1L",
-			"HP", "HPOUT1R",
+		audio-routing = /* Headphone */
+				"HP", "HPOUT1L",
+				"HP", "HPOUT1R",
 
-			/* Speaker */
-			"SPK", "SPKOUT",
-			"SPKOUT", "HPOUT2L",
-			"SPKOUT", "HPOUT2R",
+				/* Speaker */
+				"SPK", "SPKOUT",
+				"SPKOUT", "HPOUT2L",
+				"SPKOUT", "HPOUT2R",
 
-			/* Receiver */
-			"RCV", "HPOUT3L",
-			"RCV", "HPOUT3R";
-		status = "okay";
+				/* Receiver */
+				"RCV", "HPOUT3L",
+				"RCV", "HPOUT3R";
 	};
 };
 
 &adc {
 	vdd-supply = <&ldo3_reg>;
+
 	status = "okay";
 
 	thermistor-ap {
@@ -169,110 +174,120 @@
 	devfreq-events = <&ppmu_event0_d0_general>, <&ppmu_event0_d1_general>;
 	vdd-supply = <&buck4_reg>;
 	exynos,saturation-ratio = <10>;
+
 	status = "okay";
 };
 
 &bus_g2d_266 {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_gscl {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_hevc {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_jpeg {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_mfc {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_mscl {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_noc0 {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_noc1 {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &bus_noc2 {
 	devfreq = <&bus_g2d_400>;
+
 	status = "okay";
 };
 
 &cmu_aud {
 	assigned-clocks = <&cmu_aud CLK_MOUT_AUD_PLL_USER>,
-		<&cmu_aud CLK_MOUT_SCLK_AUD_I2S>,
-		<&cmu_aud CLK_MOUT_SCLK_AUD_PCM>,
-		<&cmu_top CLK_MOUT_AUD_PLL>,
-		<&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
-		<&cmu_top CLK_MOUT_SCLK_AUDIO0>,
-		<&cmu_top CLK_MOUT_SCLK_AUDIO1>,
-		<&cmu_top CLK_MOUT_SCLK_SPDIF>,
+			  <&cmu_aud CLK_MOUT_SCLK_AUD_I2S>,
+			  <&cmu_aud CLK_MOUT_SCLK_AUD_PCM>,
+			  <&cmu_top CLK_MOUT_AUD_PLL>,
+			  <&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
+			  <&cmu_top CLK_MOUT_SCLK_AUDIO0>,
+			  <&cmu_top CLK_MOUT_SCLK_AUDIO1>,
+			  <&cmu_top CLK_MOUT_SCLK_SPDIF>,
 
-		<&cmu_aud CLK_DIV_AUD_CA5>,
-		<&cmu_aud CLK_DIV_ACLK_AUD>,
-		<&cmu_aud CLK_DIV_PCLK_DBG_AUD>,
-		<&cmu_aud CLK_DIV_SCLK_AUD_I2S>,
-		<&cmu_aud CLK_DIV_SCLK_AUD_PCM>,
-		<&cmu_aud CLK_DIV_SCLK_AUD_SLIMBUS>,
-		<&cmu_aud CLK_DIV_SCLK_AUD_UART>,
-		<&cmu_top CLK_DIV_SCLK_AUDIO0>,
-		<&cmu_top CLK_DIV_SCLK_AUDIO1>,
-		<&cmu_top CLK_DIV_SCLK_PCM1>,
-		<&cmu_top CLK_DIV_SCLK_I2S1>;
+			  <&cmu_aud CLK_DIV_AUD_CA5>,
+			  <&cmu_aud CLK_DIV_ACLK_AUD>,
+			  <&cmu_aud CLK_DIV_PCLK_DBG_AUD>,
+			  <&cmu_aud CLK_DIV_SCLK_AUD_I2S>,
+			  <&cmu_aud CLK_DIV_SCLK_AUD_PCM>,
+			  <&cmu_aud CLK_DIV_SCLK_AUD_SLIMBUS>,
+			  <&cmu_aud CLK_DIV_SCLK_AUD_UART>,
+			  <&cmu_top CLK_DIV_SCLK_AUDIO0>,
+			  <&cmu_top CLK_DIV_SCLK_AUDIO1>,
+			  <&cmu_top CLK_DIV_SCLK_PCM1>,
+			  <&cmu_top CLK_DIV_SCLK_I2S1>;
 
 	assigned-clock-parents = <&cmu_top CLK_FOUT_AUD_PLL>,
-		<&cmu_aud CLK_MOUT_AUD_PLL_USER>,
-		<&cmu_aud CLK_MOUT_AUD_PLL_USER>,
-		<&cmu_top CLK_FOUT_AUD_PLL>,
-		<&cmu_top CLK_MOUT_AUD_PLL>,
-		<&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
-		<&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
-		<&cmu_top CLK_SCLK_AUDIO0>;
+				 <&cmu_aud CLK_MOUT_AUD_PLL_USER>,
+				 <&cmu_aud CLK_MOUT_AUD_PLL_USER>,
+				 <&cmu_top CLK_FOUT_AUD_PLL>,
+				 <&cmu_top CLK_MOUT_AUD_PLL>,
+				 <&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
+				 <&cmu_top CLK_MOUT_AUD_PLL_USER_T>,
+				 <&cmu_top CLK_SCLK_AUDIO0>;
 
 	assigned-clock-rates = <0>, <0>, <0>, <0>, <0>, <0>, <0>, <0>,
-		<196608001>, <65536001>, <32768001>, <49152001>,
-		<2048001>, <24576001>, <196608001>,
-		<24576001>, <98304001>, <2048001>, <49152001>;
+			       <196608001>, <65536001>, <32768001>, <49152001>,
+			       <2048001>, <24576001>, <196608001>,
+			       <24576001>, <98304001>, <2048001>, <49152001>;
 };
 
 &cmu_fsys {
 	assigned-clocks = <&cmu_top CLK_MOUT_SCLK_USBDRD30>,
-		<&cmu_top CLK_MOUT_SCLK_USBHOST30>,
-		<&cmu_fsys CLK_MOUT_SCLK_USBDRD30_USER>,
-		<&cmu_fsys CLK_MOUT_SCLK_USBHOST30_USER>,
-		<&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_USER>,
-		<&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_USER>,
-		<&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_USER>,
-		<&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_USER>,
-		<&cmu_top CLK_DIV_SCLK_USBDRD30>,
-		<&cmu_top CLK_DIV_SCLK_USBHOST30>;
+			  <&cmu_top CLK_MOUT_SCLK_USBHOST30>,
+			  <&cmu_fsys CLK_MOUT_SCLK_USBDRD30_USER>,
+			  <&cmu_fsys CLK_MOUT_SCLK_USBHOST30_USER>,
+			  <&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_USER>,
+			  <&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_USER>,
+			  <&cmu_fsys CLK_MOUT_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_USER>,
+			  <&cmu_fsys CLK_MOUT_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_USER>,
+			  <&cmu_top CLK_DIV_SCLK_USBDRD30>,
+			  <&cmu_top CLK_DIV_SCLK_USBHOST30>;
 	assigned-clock-parents = <&cmu_top CLK_MOUT_BUS_PLL_USER>,
-		<&cmu_top CLK_MOUT_BUS_PLL_USER>,
-		<&cmu_top CLK_SCLK_USBDRD30_FSYS>,
-		<&cmu_top CLK_SCLK_USBHOST30_FSYS>,
-		<&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_PHY>,
-		<&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_PHY>,
-		<&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_PHY>,
-		<&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_PHY>;
+				 <&cmu_top CLK_MOUT_BUS_PLL_USER>,
+				 <&cmu_top CLK_SCLK_USBDRD30_FSYS>,
+				 <&cmu_top CLK_SCLK_USBHOST30_FSYS>,
+				 <&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PIPE_PCLK_PHY>,
+				 <&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PIPE_PCLK_PHY>,
+				 <&cmu_fsys CLK_PHYCLK_USBDRD30_UDRD30_PHYCLOCK_PHY>,
+				 <&cmu_fsys CLK_PHYCLK_USBHOST30_UHOST30_PHYCLOCK_PHY>;
 	assigned-clock-rates = <0>, <0>, <0>, <0>, <0>, <0>, <0>, <0>,
 			       <66700000>, <66700000>;
 };
@@ -287,6 +302,12 @@
 &cmu_mfc {
 	assigned-clocks = <&cmu_mfc CLK_MOUT_ACLK_MFC_400_USER>;
 	assigned-clock-parents = <&cmu_top CLK_ACLK_MFC_400>;
+};
+
+&cmu_mif {
+	assigned-clocks = <&cmu_mif CLK_MOUT_SCLK_DSD_A>, <&cmu_mif CLK_DIV_SCLK_DSD>;
+	assigned-clock-parents = <&cmu_mif CLK_MOUT_MFC_PLL_DIV2>;
+	assigned-clock-rates = <0>, <333000000>;
 };
 
 &cmu_mscl {
@@ -326,6 +347,7 @@
 
 		port@0 {
 			reg = <0>;
+
 			tv_to_hdmi: endpoint {
 				remote-endpoint = <&hdmi_to_tv>;
 			};
@@ -334,7 +356,6 @@
 };
 
 &dsi {
-	status = "okay";
 	vddcore-supply = <&ldo6_reg>;
 	vddio-supply = <&ldo7_reg>;
 	samsung,burst-clock-frequency = <512000000>;
@@ -342,14 +363,23 @@
 	samsung,pll-clock-frequency = <24000000>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&te_irq>;
+
+	status = "okay";
+};
+
+&gpu {
+	mali-supply = <&buck6_reg>;
+
+	status = "okay";
 };
 
 &hdmi {
 	hpd-gpios = <&gpa3 0 GPIO_ACTIVE_HIGH>;
-	status = "okay";
 	vdd-supply = <&ldo6_reg>;
 	vdd_osc-supply = <&ldo7_reg>;
 	vdd_pll-supply = <&ldo6_reg>;
+
+	status = "okay";
 
 	ports {
 		#address-cells = <1>;
@@ -357,6 +387,7 @@
 
 		port@0 {
 			reg = <0>;
+
 			hdmi_to_tv: endpoint {
 				remote-endpoint = <&tv_to_hdmi>;
 			};
@@ -364,6 +395,7 @@
 
 		port@1 {
 			reg = <1>;
+
 			hdmi_to_mhl: endpoint {
 				remote-endpoint = <&mhl_to_hdmi>;
 			};
@@ -372,21 +404,22 @@
 };
 
 &hsi2c_0 {
-	status = "okay";
 	clock-frequency = <2500000>;
 
-	s2mps13-pmic@66 {
+	status = "okay";
+
+	pmic@66 {
 		compatible = "samsung,s2mps13-pmic";
 		interrupt-parent = <&gpa0>;
-		interrupts = <7 IRQ_TYPE_NONE>;
+		interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
 		reg = <0x66>;
 		samsung,s2mps11-wrstbi-ground;
+		wakeup-source;
 
 		s2mps13_osc: clocks {
 			compatible = "samsung,s2mps13-clk";
 			#clock-cells = <1>;
-			clock-output-names = "s2mps13_ap", "s2mps13_cp",
-				"s2mps13_bt";
+			clock-output-names = "s2mps13_ap", "s2mps13_cp", "s2mps13_bt";
 		};
 
 		regulators {
@@ -402,6 +435,7 @@
 				regulator-min-microvolt = <2800000>;
 				regulator-max-microvolt = <2800000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -419,6 +453,7 @@
 				regulator-min-microvolt = <1300000>;
 				regulator-max-microvolt = <1300000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -429,6 +464,7 @@
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -438,6 +474,7 @@
 				regulator-name = "VDD10_MIPI2L_1.0V_AP";
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -448,6 +485,7 @@
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -458,6 +496,7 @@
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -468,6 +507,7 @@
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -477,6 +517,7 @@
 				regulator-name = "VDD33_USB30_3.0V_AP";
 				regulator-min-microvolt = <3000000>;
 				regulator-max-microvolt = <3000000>;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -487,6 +528,7 @@
 				regulator-min-microvolt = <1000000>;
 				regulator-max-microvolt = <1000000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -504,6 +546,7 @@
 				regulator-min-microvolt = <950000>;
 				regulator-max-microvolt = <950000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -514,6 +557,7 @@
 				regulator-min-microvolt = <1200000>;
 				regulator-max-microvolt = <1200000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -524,6 +568,7 @@
 				regulator-min-microvolt = <1200000>;
 				regulator-max-microvolt = <1200000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -690,6 +735,7 @@
 				regulator-min-microvolt = <600000>;
 				regulator-max-microvolt = <1500000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -700,6 +746,7 @@
 				regulator-min-microvolt = <900000>;
 				regulator-max-microvolt = <1300000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -710,6 +757,7 @@
 				regulator-min-microvolt = <800000>;
 				regulator-max-microvolt = <1200000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -720,6 +768,7 @@
 				regulator-min-microvolt = <600000>;
 				regulator-max-microvolt = <1500000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -730,6 +779,7 @@
 				regulator-min-microvolt = <600000>;
 				regulator-max-microvolt = <1500000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -740,6 +790,7 @@
 				regulator-min-microvolt = <600000>;
 				regulator-max-microvolt = <1500000>;
 				regulator-always-on;
+
 				regulator-state-mem {
 					regulator-off-in-suspend;
 				};
@@ -783,9 +834,9 @@
 		compatible = "samsung,s3fwrn5-i2c";
 		reg = <0x27>;
 		interrupt-parent = <&gpa1>;
-		interrupts = <3 IRQ_TYPE_LEVEL_HIGH>;
-		s3fwrn5,en-gpios = <&gpf1 4 GPIO_ACTIVE_HIGH>;
-		s3fwrn5,fw-gpios = <&gpj0 2 GPIO_ACTIVE_HIGH>;
+		interrupts = <3 IRQ_TYPE_EDGE_RISING>;
+		en-gpios = <&gpf1 4 GPIO_ACTIVE_LOW>;
+		wake-gpios = <&gpj0 2 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -803,10 +854,11 @@
 };
 
 &hsi2c_7 {
-	status = "okay";
 	clock-frequency = <1000000>;
 
-	sii8620@39 {
+	status = "okay";
+
+	bridge@39 {
 		reg = <0x39>;
 		compatible = "sil,sii8620";
 		cvcc10-supply = <&ldo36_reg>;
@@ -823,6 +875,7 @@
 
 			port@0 {
 				reg = <0>;
+
 				mhl_to_hdmi: endpoint {
 					remote-endpoint = <&hdmi_to_mhl>;
 				};
@@ -830,6 +883,7 @@
 
 			port@1 {
 				reg = <1>;
+
 				mhl_to_musb_con: endpoint {
 					remote-endpoint = <&musb_con_to_mhl>;
 				};
@@ -841,16 +895,16 @@
 &hsi2c_8 {
 	status = "okay";
 
-	max77843@66 {
+	pmic@66 {
 		compatible = "maxim,max77843";
 		interrupt-parent = <&gpa1>;
 		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
 		reg = <0x66>;
 
-		muic: max77843-muic {
+		muic: extcon {
 			compatible = "maxim,max77843-muic";
 
-			musb_con: musb_connector {
+			musb_con: connector {
 				compatible = "samsung,usb-connector-11pin",
 					     "usb-b-connector";
 				label = "micro-USB";
@@ -860,11 +914,32 @@
 					#address-cells = <1>;
 					#size-cells = <0>;
 
+					port@0 {
+						/*
+						 * TODO: The DTS this is based on does not have
+						 * port@0 which is a required property. The ports
+						 * look incomplete and need fixing.
+						 * Add a disabled port just to satisfy dtschema.
+						 */
+						reg = <0>;
+
+						status = "disabled";
+					};
+
 					port@3 {
 						reg = <3>;
+
 						musb_con_to_mhl: endpoint {
 							remote-endpoint = <&mhl_to_musb_con>;
 						};
+					};
+				};
+			};
+
+			ports {
+				port {
+					muic_to_usb: endpoint {
+						remote-endpoint = <&usb_to_muic>;
 					};
 				};
 			};
@@ -872,6 +947,7 @@
 
 		regulators {
 			compatible = "maxim,max77843-regulator";
+
 			safeout1_reg: SAFEOUT1 {
 				regulator-name = "SAFEOUT1";
 				regulator-min-microvolt = <3300000>;
@@ -891,11 +967,10 @@
 			};
 		};
 
-		haptic: max77843-haptic {
+		haptic: motor-driver {
 			compatible = "maxim,max77843-haptic";
 			haptic-supply = <&ldo38_reg>;
 			pwms = <&pwm 0 33670 0>;
-			pwm-names = "haptic";
 		};
 	};
 };
@@ -911,11 +986,12 @@
 &i2s1 {
 	assigned-clocks = <&i2s1 CLK_I2S_RCLK_SRC>;
 	assigned-clock-parents = <&cmu_peric CLK_SCLK_I2S1>;
+
 	status = "okay";
 };
 
 &mshc_0 {
-	status = "okay";
+	mmc-ddr-1_8v;
 	mmc-hs200-1_8v;
 	mmc-hs400-1_8v;
 	cap-mmc-highspeed;
@@ -929,18 +1005,18 @@
 	fifo-depth = <0x80>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sd0_clk &sd0_cmd &sd0_qrdy &sd0_bus1 &sd0_bus4
-			&sd0_bus8 &sd0_rdqs>;
+		     &sd0_bus8 &sd0_rdqs>;
 	bus-width = <8>;
 	assigned-clocks = <&cmu_top CLK_SCLK_MMC0_FSYS>;
 	assigned-clock-rates = <800000000>;
+
+	status = "okay";
 };
 
 &mshc_2 {
-	status = "okay";
 	cap-sd-highspeed;
 	disable-wp;
-	cd-gpios = <&gpa2 4 GPIO_ACTIVE_HIGH>;
-	cd-inverted;
+	cd-gpios = <&gpa2 4 GPIO_ACTIVE_LOW>;
 	card-detect-delay = <200>;
 	samsung,dw-mshc-ciu-div = <3>;
 	samsung,dw-mshc-sdr-timing = <0 4>;
@@ -949,10 +1025,33 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_bus1 &sd2_bus4>;
 	bus-width = <4>;
+
+	status = "okay";
+};
+
+&pcie {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie_bus &pcie_wlanen>;
+	vdd10-supply = <&ldo6_reg>;
+	vdd18-supply = <&ldo7_reg>;
+	assigned-clocks = <&cmu_fsys CLK_MOUT_SCLK_PCIE_100_USER>,
+			  <&cmu_top CLK_MOUT_SCLK_PCIE_100>;
+	assigned-clock-parents = <&cmu_top CLK_SCLK_PCIE_100_FSYS>,
+				 <&cmu_top CLK_MOUT_BUS_PLL_USER>;
+	assigned-clock-rates = <0>, <100000000>;
+	interrupt-map-mask = <0 0 0 0>;
+	interrupt-map = <0 0 0 0 &gic GIC_SPI 245 IRQ_TYPE_LEVEL_HIGH>;
+
+	status = "okay";
+};
+
+&pcie_phy {
+	status = "okay";
 };
 
 &ppmu_d0_general {
 	status = "okay";
+
 	events {
 		ppmu_event0_d0_general: ppmu-event0-d0-general {
 			event-name = "ppmu-event0-d0-general";
@@ -962,11 +1061,12 @@
 
 &ppmu_d1_general {
 	status = "okay";
+
 	events {
 		ppmu_event0_d1_general: ppmu-event0-d1-general {
 		       event-name = "ppmu-event0-d1-general";
 	       };
-       };
+	};
 };
 
 &pinctrl_alive {
@@ -974,82 +1074,82 @@
 	pinctrl-0 = <&initial_alive>;
 
 	initial_alive: initial-state {
-		PIN(INPUT, gpa0-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpa0-1, NONE, FAST_SR1);
-		PIN(INPUT, gpa0-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpa0-3, NONE, FAST_SR1);
-		PIN(INPUT, gpa0-4, NONE, FAST_SR1);
-		PIN(INPUT, gpa0-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpa0-6, NONE, FAST_SR1);
-		PIN(INPUT, gpa0-7, NONE, FAST_SR1);
+		PIN_IN(gpa0-0, DOWN, FAST_SR1);
+		PIN_IN(gpa0-1, NONE, FAST_SR1);
+		PIN_IN(gpa0-2, DOWN, FAST_SR1);
+		PIN_IN(gpa0-3, NONE, FAST_SR1);
+		PIN_IN(gpa0-4, NONE, FAST_SR1);
+		PIN_IN(gpa0-5, DOWN, FAST_SR1);
+		PIN_IN(gpa0-6, NONE, FAST_SR1);
+		PIN_IN(gpa0-7, NONE, FAST_SR1);
 
-		PIN(INPUT, gpa1-0, UP, FAST_SR1);
-		PIN(INPUT, gpa1-1, UP, FAST_SR1);
-		PIN(INPUT, gpa1-2, NONE, FAST_SR1);
-		PIN(INPUT, gpa1-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpa1-4, DOWN, FAST_SR1);
-		PIN(INPUT, gpa1-5, NONE, FAST_SR1);
-		PIN(INPUT, gpa1-6, NONE, FAST_SR1);
-		PIN(INPUT, gpa1-7, NONE, FAST_SR1);
+		PIN_IN(gpa1-0, UP, FAST_SR1);
+		PIN_IN(gpa1-1, UP, FAST_SR1);
+		PIN_IN(gpa1-2, NONE, FAST_SR1);
+		PIN_IN(gpa1-3, DOWN, FAST_SR1);
+		PIN_IN(gpa1-4, DOWN, FAST_SR1);
+		PIN_IN(gpa1-5, NONE, FAST_SR1);
+		PIN_IN(gpa1-6, NONE, FAST_SR1);
+		PIN_IN(gpa1-7, NONE, FAST_SR1);
 
-		PIN(INPUT, gpa2-0, NONE, FAST_SR1);
-		PIN(INPUT, gpa2-1, NONE, FAST_SR1);
-		PIN(INPUT, gpa2-2, NONE, FAST_SR1);
-		PIN(INPUT, gpa2-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpa2-4, NONE, FAST_SR1);
-		PIN(INPUT, gpa2-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpa2-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpa2-7, NONE, FAST_SR1);
+		PIN_IN(gpa2-0, NONE, FAST_SR1);
+		PIN_IN(gpa2-1, NONE, FAST_SR1);
+		PIN_IN(gpa2-2, NONE, FAST_SR1);
+		PIN_IN(gpa2-3, DOWN, FAST_SR1);
+		PIN_IN(gpa2-4, NONE, FAST_SR1);
+		PIN_IN(gpa2-5, DOWN, FAST_SR1);
+		PIN_IN(gpa2-6, DOWN, FAST_SR1);
+		PIN_IN(gpa2-7, NONE, FAST_SR1);
 
-		PIN(INPUT, gpa3-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpa3-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpa3-2, NONE, FAST_SR1);
-		PIN(INPUT, gpa3-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpa3-4, NONE, FAST_SR1);
-		PIN(INPUT, gpa3-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpa3-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpa3-7, DOWN, FAST_SR1);
+		PIN_IN(gpa3-0, DOWN, FAST_SR1);
+		PIN_IN(gpa3-1, DOWN, FAST_SR1);
+		PIN_IN(gpa3-2, NONE, FAST_SR1);
+		PIN_IN(gpa3-3, DOWN, FAST_SR1);
+		PIN_IN(gpa3-4, NONE, FAST_SR1);
+		PIN_IN(gpa3-5, DOWN, FAST_SR1);
+		PIN_IN(gpa3-6, DOWN, FAST_SR1);
+		PIN_IN(gpa3-7, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpf1-0, NONE, FAST_SR1);
-		PIN(INPUT, gpf1-1, NONE, FAST_SR1);
-		PIN(INPUT, gpf1-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpf1-4, UP, FAST_SR1);
-		PIN(OUTPUT, gpf1-5, NONE, FAST_SR1);
-		PIN(INPUT, gpf1-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpf1-7, DOWN, FAST_SR1);
+		PIN_IN(gpf1-0, NONE, FAST_SR1);
+		PIN_IN(gpf1-1, NONE, FAST_SR1);
+		PIN_IN(gpf1-2, DOWN, FAST_SR1);
+		PIN_IN(gpf1-4, UP, FAST_SR1);
+		PIN_OT(gpf1-5, NONE, FAST_SR1);
+		PIN_IN(gpf1-6, DOWN, FAST_SR1);
+		PIN_IN(gpf1-7, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpf2-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpf2-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpf2-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpf2-3, DOWN, FAST_SR1);
+		PIN_IN(gpf2-0, DOWN, FAST_SR1);
+		PIN_IN(gpf2-1, DOWN, FAST_SR1);
+		PIN_IN(gpf2-2, DOWN, FAST_SR1);
+		PIN_IN(gpf2-3, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpf3-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpf3-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpf3-2, NONE, FAST_SR1);
-		PIN(INPUT, gpf3-3, DOWN, FAST_SR1);
+		PIN_IN(gpf3-0, DOWN, FAST_SR1);
+		PIN_IN(gpf3-1, DOWN, FAST_SR1);
+		PIN_IN(gpf3-2, NONE, FAST_SR1);
+		PIN_IN(gpf3-3, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpf4-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-4, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpf4-7, DOWN, FAST_SR1);
+		PIN_IN(gpf4-0, DOWN, FAST_SR1);
+		PIN_IN(gpf4-1, DOWN, FAST_SR1);
+		PIN_IN(gpf4-2, DOWN, FAST_SR1);
+		PIN_IN(gpf4-3, DOWN, FAST_SR1);
+		PIN_IN(gpf4-4, DOWN, FAST_SR1);
+		PIN_IN(gpf4-5, DOWN, FAST_SR1);
+		PIN_IN(gpf4-6, DOWN, FAST_SR1);
+		PIN_IN(gpf4-7, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpf5-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpf5-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpf5-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpf5-3, DOWN, FAST_SR1);
-		PIN(OUTPUT, gpf5-4, NONE, FAST_SR1);
-		PIN(INPUT, gpf5-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpf5-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpf5-7, DOWN, FAST_SR1);
+		PIN_IN(gpf5-0, DOWN, FAST_SR1);
+		PIN_IN(gpf5-1, DOWN, FAST_SR1);
+		PIN_IN(gpf5-2, DOWN, FAST_SR1);
+		PIN_IN(gpf5-3, DOWN, FAST_SR1);
+		PIN_OT(gpf5-4, NONE, FAST_SR1);
+		PIN_IN(gpf5-5, DOWN, FAST_SR1);
+		PIN_IN(gpf5-6, DOWN, FAST_SR1);
+		PIN_IN(gpf5-7, DOWN, FAST_SR1);
 	};
 
-	te_irq: te_irq {
+	te_irq: te-irq-pins {
 		samsung,pins = "gpf1-3";
-		samsung,pin-function = <0xf>;
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 	};
 };
 
@@ -1058,8 +1158,8 @@
 	pinctrl-0 = <&initial_cpif>;
 
 	initial_cpif: initial-state {
-		PIN(INPUT, gpv6-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpv6-1, DOWN, FAST_SR1);
+		PIN_IN(gpv6-0, DOWN, FAST_SR1);
+		PIN_IN(gpv6-1, DOWN, FAST_SR1);
 	};
 };
 
@@ -1067,10 +1167,16 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&initial_ese>;
 
+	pcie_wlanen: pcie-wlanen-pins {
+		samsung,pins = "gpj2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR4>;
+	};
+
 	initial_ese: initial-state {
-		PIN(INPUT, gpj2-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpj2-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpj2-2, DOWN, FAST_SR1);
+		PIN_IN(gpj2-1, DOWN, FAST_SR1);
+		PIN_IN(gpj2-2, DOWN, FAST_SR1);
 	};
 };
 
@@ -1079,11 +1185,11 @@
 	pinctrl-0 = <&initial_fsys>;
 
 	initial_fsys: initial-state {
-		PIN(INPUT, gpr3-0, NONE, FAST_SR1);
-		PIN(INPUT, gpr3-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpr3-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpr3-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpr3-7, NONE, FAST_SR1);
+		PIN_IN(gpr3-0, NONE, FAST_SR1);
+		PIN_IN(gpr3-1, DOWN, FAST_SR1);
+		PIN_IN(gpr3-2, DOWN, FAST_SR1);
+		PIN_IN(gpr3-3, DOWN, FAST_SR1);
+		PIN_IN(gpr3-7, NONE, FAST_SR1);
 	};
 };
 
@@ -1092,14 +1198,14 @@
 	pinctrl-0 = <&initial_imem>;
 
 	initial_imem: initial-state {
-		PIN(INPUT, gpf0-0, UP, FAST_SR1);
-		PIN(INPUT, gpf0-1, UP, FAST_SR1);
-		PIN(INPUT, gpf0-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpf0-3, UP, FAST_SR1);
-		PIN(INPUT, gpf0-4, DOWN, FAST_SR1);
-		PIN(INPUT, gpf0-5, NONE, FAST_SR1);
-		PIN(INPUT, gpf0-6, DOWN, FAST_SR1);
-		PIN(INPUT, gpf0-7, UP, FAST_SR1);
+		PIN_IN(gpf0-0, UP, FAST_SR1);
+		PIN_IN(gpf0-1, UP, FAST_SR1);
+		PIN_IN(gpf0-2, DOWN, FAST_SR1);
+		PIN_IN(gpf0-3, UP, FAST_SR1);
+		PIN_IN(gpf0-4, DOWN, FAST_SR1);
+		PIN_IN(gpf0-5, NONE, FAST_SR1);
+		PIN_IN(gpf0-6, DOWN, FAST_SR1);
+		PIN_IN(gpf0-7, UP, FAST_SR1);
 	};
 };
 
@@ -1108,7 +1214,7 @@
 	pinctrl-0 = <&initial_nfc>;
 
 	initial_nfc: initial-state {
-		PIN(INPUT, gpj0-2, DOWN, FAST_SR1);
+		PIN_IN(gpj0-2, DOWN, FAST_SR1);
 	};
 };
 
@@ -1117,53 +1223,53 @@
 	pinctrl-0 = <&initial_peric>;
 
 	initial_peric: initial-state {
-		PIN(INPUT, gpv7-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpv7-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpv7-2, NONE, FAST_SR1);
-		PIN(INPUT, gpv7-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpv7-4, DOWN, FAST_SR1);
-		PIN(INPUT, gpv7-5, DOWN, FAST_SR1);
+		PIN_IN(gpv7-0, DOWN, FAST_SR1);
+		PIN_IN(gpv7-1, DOWN, FAST_SR1);
+		PIN_IN(gpv7-2, NONE, FAST_SR1);
+		PIN_IN(gpv7-3, DOWN, FAST_SR1);
+		PIN_IN(gpv7-4, DOWN, FAST_SR1);
+		PIN_IN(gpv7-5, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpb0-4, DOWN, FAST_SR1);
+		PIN_IN(gpb0-4, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpc0-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpc0-5, DOWN, FAST_SR1);
-		PIN(INPUT, gpc0-7, DOWN, FAST_SR1);
+		PIN_IN(gpc0-2, DOWN, FAST_SR1);
+		PIN_IN(gpc0-5, DOWN, FAST_SR1);
+		PIN_IN(gpc0-7, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpc1-1, DOWN, FAST_SR1);
+		PIN_IN(gpc1-1, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpc3-4, NONE, FAST_SR1);
-		PIN(INPUT, gpc3-5, NONE, FAST_SR1);
-		PIN(INPUT, gpc3-6, NONE, FAST_SR1);
-		PIN(INPUT, gpc3-7, NONE, FAST_SR1);
+		PIN_IN(gpc3-4, NONE, FAST_SR1);
+		PIN_IN(gpc3-5, NONE, FAST_SR1);
+		PIN_IN(gpc3-6, NONE, FAST_SR1);
+		PIN_IN(gpc3-7, NONE, FAST_SR1);
 
-		PIN(OUTPUT, gpg0-0, NONE, FAST_SR1);
-		PIN(2, gpg0-1, DOWN, FAST_SR1);
+		PIN_OT(gpg0-0, NONE, FAST_SR1);
+		PIN_F2(gpg0-1, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpd2-5, DOWN, FAST_SR1);
+		PIN_IN(gpd2-5, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpd4-0, NONE, FAST_SR1);
-		PIN(INPUT, gpd4-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpd4-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpd4-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpd4-4, DOWN, FAST_SR1);
+		PIN_IN(gpd4-0, NONE, FAST_SR1);
+		PIN_IN(gpd4-1, DOWN, FAST_SR1);
+		PIN_IN(gpd4-2, DOWN, FAST_SR1);
+		PIN_IN(gpd4-3, DOWN, FAST_SR1);
+		PIN_IN(gpd4-4, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpd6-3, DOWN, FAST_SR1);
+		PIN_IN(gpd6-3, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpd8-1, UP, FAST_SR1);
+		PIN_IN(gpd8-1, UP, FAST_SR1);
 
-		PIN(INPUT, gpg1-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpg1-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpg1-2, DOWN, FAST_SR1);
-		PIN(INPUT, gpg1-3, DOWN, FAST_SR1);
-		PIN(INPUT, gpg1-4, DOWN, FAST_SR1);
+		PIN_IN(gpg1-0, DOWN, FAST_SR1);
+		PIN_IN(gpg1-1, DOWN, FAST_SR1);
+		PIN_IN(gpg1-2, DOWN, FAST_SR1);
+		PIN_IN(gpg1-3, DOWN, FAST_SR1);
+		PIN_IN(gpg1-4, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpg2-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpg2-1, DOWN, FAST_SR1);
+		PIN_IN(gpg2-0, DOWN, FAST_SR1);
+		PIN_IN(gpg2-1, DOWN, FAST_SR1);
 
-		PIN(INPUT, gpg3-0, DOWN, FAST_SR1);
-		PIN(INPUT, gpg3-1, DOWN, FAST_SR1);
-		PIN(INPUT, gpg3-5, DOWN, FAST_SR1);
+		PIN_IN(gpg3-0, DOWN, FAST_SR1);
+		PIN_IN(gpg3-1, DOWN, FAST_SR1);
+		PIN_IN(gpg3-5, DOWN, FAST_SR1);
 	};
 };
 
@@ -1172,13 +1278,14 @@
 	pinctrl-0 = <&initial_touch>;
 
 	initial_touch: initial-state {
-		PIN(INPUT, gpj1-2, DOWN, FAST_SR1);
+		PIN_IN(gpj1-2, DOWN, FAST_SR1);
 	};
 };
 
 &pwm {
 	pinctrl-0 = <&pwm0_out>;
 	pinctrl-names = "default";
+
 	status = "okay";
 };
 
@@ -1195,27 +1302,44 @@
 	status = "okay";
 };
 
-&spi_1 {
-	cs-gpios = <&gpd6 3 GPIO_ACTIVE_HIGH>;
+&serial_3 {
 	status = "okay";
 
-	wm5110: wm5110-codec@0 {
+	bluetooth {
+		compatible = "brcm,bcm43438-bt";
+		max-speed = <3000000>;
+		shutdown-gpios = <&gpd4 0 GPIO_ACTIVE_HIGH>;
+		device-wakeup-gpios = <&gpr3 7 GPIO_ACTIVE_HIGH>;
+		host-wakeup-gpios = <&gpa2 2 GPIO_ACTIVE_HIGH>;
+		clocks = <&s2mps13_osc S2MPS11_CLK_BT>;
+		clock-names = "extclk";
+	};
+};
+
+&spi_1 {
+	cs-gpios = <&gpd6 3 GPIO_ACTIVE_HIGH>;
+
+	status = "okay";
+
+	wm5110: audio-codec@0 {
 		compatible = "wlf,wm5110";
 		reg = <0x0>;
 		spi-max-frequency = <20000000>;
 		interrupt-parent = <&gpa0>;
 		interrupts = <4 IRQ_TYPE_NONE>;
 		clocks = <&pmu_system_controller 0>,
-			<&s2mps13_osc S2MPS11_CLK_BT>;
+			 <&s2mps13_osc S2MPS11_CLK_BT>;
 		clock-names = "mclk1", "mclk2";
 
 		gpio-controller;
 		#gpio-cells = <2>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
 
 		wlf,micd-detect-debounce = <300>;
 		wlf,micd-bias-start-time = <0x1>;
 		wlf,micd-rate = <0x7>;
-		wlf,micd-dbtime = <0x1>;
+		wlf,micd-dbtime = <0x2>;
 		wlf,micd-force-micbias;
 		wlf,micd-configs = <0x0 1 0>;
 		wlf,hpdet-channel = <1>;
@@ -1231,6 +1355,8 @@
 		CPVDD-supply = <&ldo18_reg>;
 		DBVDD2-supply = <&ldo18_reg>;
 		DBVDD3-supply = <&ldo18_reg>;
+		SPKVDDL-supply = <&vph_pwr_regulator>;
+		SPKVDDR-supply = <&vph_pwr_regulator>;
 
 		controller-data {
 			samsung,spi-feedback-delay = <0>;
@@ -1239,15 +1365,16 @@
 };
 
 &spi_3 {
-	status = "okay";
 	no-cs-readback;
+
+	status = "okay";
 
 	irled@0 {
 		compatible = "ir-spi-led";
 		reg = <0x0>;
 		spi-max-frequency = <5000000>;
 		power-supply = <&irda_regulator>;
-		duty-cycle = <60>;
+		duty-cycle = /bits/ 8 <60>;
 		led-active-low;
 
 		controller-data {
@@ -1262,33 +1389,43 @@
 
 &tmu_atlas0 {
 	vtmu-supply = <&ldo3_reg>;
+
 	status = "okay";
 };
 
 &tmu_apollo {
 	vtmu-supply = <&ldo3_reg>;
+
 	status = "okay";
 };
 
 &tmu_g3d {
 	vtmu-supply = <&ldo3_reg>;
+
 	status = "okay";
 };
 
 &usbdrd30 {
 	vdd33-supply = <&ldo10_reg>;
 	vdd10-supply = <&ldo6_reg>;
+
 	status = "okay";
 };
 
 &usbdrd_dwc3 {
 	dr_mode = "otg";
-	extcon = <&muic>;
 };
 
 &usbdrd30_phy {
 	vbus-supply = <&safeout1_reg>;
+
 	status = "okay";
+
+	port {
+		usb_to_muic: endpoint {
+			remote-endpoint = <&muic_to_usb>;
+		};
+	};
 };
 
 &xxti {

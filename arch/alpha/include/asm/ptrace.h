@@ -16,13 +16,19 @@
 
 #define current_pt_regs() \
   ((struct pt_regs *) ((char *)current_thread_info() + 2*PAGE_SIZE) - 1)
-#define signal_pt_regs current_pt_regs
 
 #define force_successful_syscall_return() (current_pt_regs()->r0 = 0)
 
 static inline unsigned long regs_return_value(struct pt_regs *regs)
 {
 	return regs->r0;
+}
+
+/* Helpers for working with the user stack pointer */
+static inline unsigned long user_stack_pointer(struct pt_regs *regs)
+{
+	/* Valid for user-mode regs */
+	return regs->usp;
 }
 
 #endif

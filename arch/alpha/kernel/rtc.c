@@ -15,6 +15,7 @@
 #include <linux/bcd.h>
 #include <linux/rtc.h>
 #include <linux/platform_device.h>
+#include <linux/workqueue.h>
 
 #include "proto.h"
 
@@ -80,7 +81,12 @@ init_rtc_epoch(void)
 static int
 alpha_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
-	mc146818_get_time(tm);
+	int ret = mc146818_get_time(tm, 10);
+
+	if (ret < 0) {
+		dev_err_ratelimited(dev, "unable to read current time\n");
+		return ret;
+	}
 
 	/* Adjust for non-default epochs.  It's easier to depend on the
 	   generic __get_rtc_time and adjust the epoch here than create
@@ -137,54 +143,40 @@ static const struct rtc_class_ops alpha_rtc_ops = {
 };
 
 /*
- * Similarly, except do the actual CMOS access on the boot cpu only.
- * This requires marshalling the data across an interprocessor call.
+ * Similarly, except do the actual CMOS access on the boot cpu only.  The
+ * access polls for the RTC update cycle and takes rtc_lock, so run it in a
+ * worker on that cpu rather than from an interprocessor interrupt.
  */
 
 #if defined(CONFIG_SMP) && \
     (defined(CONFIG_ALPHA_GENERIC) || defined(CONFIG_ALPHA_MARVEL))
 # define HAVE_REMOTE_RTC 1
 
-union remote_data {
-	struct rtc_time *tm;
-	long retval;
-};
-
-static void
+static long
 do_remote_read(void *data)
 {
-	union remote_data *x = data;
-	x->retval = alpha_rtc_read_time(NULL, x->tm);
+	return alpha_rtc_read_time(NULL, data);
 }
 
 static int
 remote_read_time(struct device *dev, struct rtc_time *tm)
 {
-	union remote_data x;
-	if (smp_processor_id() != boot_cpuid) {
-		x.tm = tm;
-		smp_call_function_single(boot_cpuid, do_remote_read, &x, 1);
-		return x.retval;
-	}
+	if (smp_processor_id() != boot_cpuid)
+		return work_on_cpu(boot_cpuid, do_remote_read, tm);
 	return alpha_rtc_read_time(NULL, tm);
 }
 
-static void
+static long
 do_remote_set(void *data)
 {
-	union remote_data *x = data;
-	x->retval = alpha_rtc_set_time(NULL, x->tm);
+	return alpha_rtc_set_time(NULL, data);
 }
 
 static int
 remote_set_time(struct device *dev, struct rtc_time *tm)
 {
-	union remote_data x;
-	if (smp_processor_id() != boot_cpuid) {
-		x.tm = tm;
-		smp_call_function_single(boot_cpuid, do_remote_set, &x, 1);
-		return x.retval;
-	}
+	if (smp_processor_id() != boot_cpuid)
+		return work_on_cpu(boot_cpuid, do_remote_set, tm);
 	return alpha_rtc_set_time(NULL, tm);
 }
 
@@ -198,26 +190,24 @@ static const struct rtc_class_ops remote_rtc_ops = {
 static int __init
 alpha_rtc_init(void)
 {
-	const struct rtc_class_ops *ops;
 	struct platform_device *pdev;
 	struct rtc_device *rtc;
-	const char *name;
 
 	init_rtc_epoch();
-	name = "rtc-alpha";
-	ops = &alpha_rtc_ops;
 
-#ifdef HAVE_REMOTE_RTC
-	if (alpha_mv.rtc_boot_cpu_only)
-		ops = &remote_rtc_ops;
-#endif
-
-	pdev = platform_device_register_simple(name, -1, NULL, 0);
-	rtc = devm_rtc_device_register(&pdev->dev, name, ops, THIS_MODULE);
+	pdev = platform_device_register_simple("rtc-alpha", -1, NULL, 0);
+	rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(rtc))
 		return PTR_ERR(rtc);
 
 	platform_set_drvdata(pdev, rtc);
-	return 0;
+	rtc->ops = &alpha_rtc_ops;
+
+#ifdef HAVE_REMOTE_RTC
+	if (alpha_mv.rtc_boot_cpu_only)
+		rtc->ops = &remote_rtc_ops;
+#endif
+
+	return devm_rtc_register_device(rtc);
 }
 device_initcall(alpha_rtc_init);

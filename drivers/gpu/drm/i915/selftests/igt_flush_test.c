@@ -4,67 +4,48 @@
  * Copyright © 2018 Intel Corporation
  */
 
-#include "../i915_drv.h"
+#include "gt/intel_gt.h"
+#include "gt/intel_gt_requests.h"
 
-#include "../i915_selftest.h"
+#include "i915_drv.h"
+#include "i915_selftest.h"
+
 #include "igt_flush_test.h"
 
-struct wedge_me {
-	struct delayed_work work;
-	struct drm_i915_private *i915;
-	const void *symbol;
-};
-
-static void wedge_me(struct work_struct *work)
+int igt_flush_test(struct drm_i915_private *i915)
 {
-	struct wedge_me *w = container_of(work, typeof(*w), work.work);
+	struct intel_gt *gt;
+	unsigned int i;
+	int ret = 0;
 
-	pr_err("%pS timed out, cancelling all further testing.\n", w->symbol);
+	for_each_gt(gt, i915, i) {
+		struct intel_engine_cs *engine;
+		unsigned long timeout_ms = 0;
+		unsigned int id;
 
-	GEM_TRACE("%pS timed out.\n", w->symbol);
-	GEM_TRACE_DUMP();
+		if (intel_gt_is_wedged(gt))
+			ret = -EIO;
 
-	i915_gem_set_wedged(w->i915);
-}
+		for_each_engine(engine, gt, id) {
+			if (engine->props.preempt_timeout_ms > timeout_ms)
+				timeout_ms = engine->props.preempt_timeout_ms;
+		}
 
-static void __init_wedge(struct wedge_me *w,
-			 struct drm_i915_private *i915,
-			 long timeout,
-			 const void *symbol)
-{
-	w->i915 = i915;
-	w->symbol = symbol;
+		cond_resched();
 
-	INIT_DELAYED_WORK_ONSTACK(&w->work, wedge_me);
-	schedule_delayed_work(&w->work, timeout);
-}
+		/* 2x longest preempt timeout, experimentally determined */
+		if (intel_gt_wait_for_idle(gt, HZ * timeout_ms / 500) == -ETIME) {
+			pr_err("%pS timed out, cancelling all further testing.\n",
+			       __builtin_return_address(0));
 
-static void __fini_wedge(struct wedge_me *w)
-{
-	cancel_delayed_work_sync(&w->work);
-	destroy_delayed_work_on_stack(&w->work);
-	w->i915 = NULL;
-}
+			GEM_TRACE("%pS timed out.\n",
+				  __builtin_return_address(0));
+			GEM_TRACE_DUMP();
 
-#define wedge_on_timeout(W, DEV, TIMEOUT)				\
-	for (__init_wedge((W), (DEV), (TIMEOUT), __builtin_return_address(0)); \
-	     (W)->i915;							\
-	     __fini_wedge((W)))
-
-int igt_flush_test(struct drm_i915_private *i915, unsigned int flags)
-{
-	struct wedge_me w;
-
-	cond_resched();
-
-	if (flags & I915_WAIT_LOCKED &&
-	    i915_gem_switch_to_kernel_context(i915)) {
-		pr_err("Failed to switch back to kernel context; declaring wedged\n");
-		i915_gem_set_wedged(i915);
+			intel_gt_set_wedged(gt);
+			ret = -EIO;
+		}
 	}
 
-	wedge_on_timeout(&w, i915, HZ)
-		i915_gem_wait_for_idle(i915, flags);
-
-	return i915_terminally_wedged(&i915->gpu_error) ? -EIO : 0;
+	return ret;
 }

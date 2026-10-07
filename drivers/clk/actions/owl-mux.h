@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
+/* SPDX-License-Identifier: GPL-2.0+ */
 //
 // OWL mux clock driver
 //
@@ -44,7 +44,7 @@ struct owl_mux {
 		},							\
 	}
 
-static inline struct owl_mux *hw_to_owl_mux(const struct clk_hw *hw)
+static inline struct owl_mux *hw_to_owl_mux(struct clk_hw *hw)
 {
 	struct owl_clk_common *common = hw_to_owl_clk_common(hw);
 

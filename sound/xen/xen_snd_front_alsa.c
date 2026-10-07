@@ -15,17 +15,24 @@
 #include <sound/pcm_params.h>
 
 #include <xen/xenbus.h>
+#include <xen/xen-front-pgdir-shbuf.h>
 
 #include "xen_snd_front.h"
 #include "xen_snd_front_alsa.h"
 #include "xen_snd_front_cfg.h"
 #include "xen_snd_front_evtchnl.h"
-#include "xen_snd_front_shbuf.h"
 
 struct xen_snd_front_pcm_stream_info {
 	struct xen_snd_front_info *front_info;
 	struct xen_snd_front_evtchnl_pair *evt_pair;
-	struct xen_snd_front_shbuf sh_buf;
+
+	/* This is the shared buffer with its backing storage. */
+	struct xen_front_pgdir_shbuf shbuf;
+	u8 *buffer;
+	size_t buffer_sz;
+	int num_pages;
+	struct page **pages;
+
 	int index;
 
 	bool is_open;
@@ -60,11 +67,6 @@ struct xen_snd_front_card_info {
 struct alsa_sndif_sample_format {
 	u8 sndif;
 	snd_pcm_format_t alsa;
-};
-
-struct alsa_sndif_hw_param {
-	u8 sndif;
-	snd_pcm_hw_param_t alsa;
 };
 
 static const struct alsa_sndif_sample_format ALSA_SNDIF_FORMATS[] = {
@@ -188,8 +190,8 @@ static u64 to_sndif_formats_mask(u64 alsa_formats)
 
 	mask = 0;
 	for (i = 0; i < ARRAY_SIZE(ALSA_SNDIF_FORMATS); i++)
-		if (1 << ALSA_SNDIF_FORMATS[i].alsa & alsa_formats)
-			mask |= 1 << ALSA_SNDIF_FORMATS[i].sndif;
+		if (pcm_format_to_bits(ALSA_SNDIF_FORMATS[i].alsa) & alsa_formats)
+			mask |= BIT_ULL(ALSA_SNDIF_FORMATS[i].sndif);
 
 	return mask;
 }
@@ -201,8 +203,8 @@ static u64 to_alsa_formats_mask(u64 sndif_formats)
 
 	mask = 0;
 	for (i = 0; i < ARRAY_SIZE(ALSA_SNDIF_FORMATS); i++)
-		if (1 << ALSA_SNDIF_FORMATS[i].sndif & sndif_formats)
-			mask |= 1 << ALSA_SNDIF_FORMATS[i].alsa;
+		if (BIT_ULL(ALSA_SNDIF_FORMATS[i].sndif) & sndif_formats)
+			mask |= pcm_format_to_bits(ALSA_SNDIF_FORMATS[i].alsa);
 
 	return mask;
 }
@@ -214,12 +216,20 @@ static void stream_clear(struct xen_snd_front_pcm_stream_info *stream)
 	stream->out_frames = 0;
 	atomic_set(&stream->hw_ptr, 0);
 	xen_snd_front_evtchnl_pair_clear(stream->evt_pair);
-	xen_snd_front_shbuf_clear(&stream->sh_buf);
+	memset(&stream->shbuf, 0, sizeof(stream->shbuf));
+	stream->buffer = NULL;
+	stream->buffer_sz = 0;
+	stream->pages = NULL;
+	stream->num_pages = 0;
 }
 
 static void stream_free(struct xen_snd_front_pcm_stream_info *stream)
 {
-	xen_snd_front_shbuf_free(&stream->sh_buf);
+	xen_front_pgdir_shbuf_unmap(&stream->shbuf);
+	xen_front_pgdir_shbuf_free(&stream->shbuf);
+	if (stream->buffer)
+		free_pages_exact(stream->buffer, stream->buffer_sz);
+	kfree(stream->pages);
 	stream_clear(stream);
 }
 
@@ -368,7 +378,7 @@ static int alsa_open(struct snd_pcm_substream *substream)
 
 	stream_clear(stream);
 
-	xen_snd_front_evtchnl_pair_set_connected(stream->evt_pair, true);
+	xen_snd_front_evtchnl_set_connected(&stream->evt_pair->req, true);
 
 	ret = snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_FORMAT,
 				  alsa_hw_rule, stream,
@@ -421,10 +431,33 @@ static int alsa_close(struct snd_pcm_substream *substream)
 	return 0;
 }
 
+static int shbuf_setup_backstore(struct xen_snd_front_pcm_stream_info *stream,
+				 size_t buffer_sz)
+{
+	int i;
+
+	stream->buffer = alloc_pages_exact(buffer_sz, GFP_KERNEL);
+	if (!stream->buffer)
+		return -ENOMEM;
+
+	stream->buffer_sz = buffer_sz;
+	stream->num_pages = DIV_ROUND_UP(stream->buffer_sz, PAGE_SIZE);
+	stream->pages = kzalloc_objs(struct page *, stream->num_pages);
+	if (!stream->pages)
+		return -ENOMEM;
+
+	for (i = 0; i < stream->num_pages; i++)
+		stream->pages[i] = virt_to_page(stream->buffer + i * PAGE_SIZE);
+
+	return 0;
+}
+
 static int alsa_hw_params(struct snd_pcm_substream *substream,
 			  struct snd_pcm_hw_params *params)
 {
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
+	struct xen_snd_front_info *front_info = stream->front_info;
+	struct xen_front_pgdir_shbuf_cfg buf_cfg;
 	int ret;
 
 	/*
@@ -432,25 +465,40 @@ static int alsa_hw_params(struct snd_pcm_substream *substream,
 	 * so free the previously allocated shared buffer if any.
 	 */
 	stream_free(stream);
+	ret = shbuf_setup_backstore(stream, params_buffer_bytes(params));
+	if (ret < 0)
+		goto fail;
 
-	ret = xen_snd_front_shbuf_alloc(stream->front_info->xb_dev,
-					&stream->sh_buf,
-					params_buffer_bytes(params));
-	if (ret < 0) {
-		stream_free(stream);
-		dev_err(&stream->front_info->xb_dev->dev,
-			"Failed to allocate buffers for stream with index %d\n",
-			stream->index);
-		return ret;
-	}
+	memset(&buf_cfg, 0, sizeof(buf_cfg));
+	buf_cfg.xb_dev = front_info->xb_dev;
+	buf_cfg.pgdir = &stream->shbuf;
+	buf_cfg.num_pages = stream->num_pages;
+	buf_cfg.pages = stream->pages;
+
+	ret = xen_front_pgdir_shbuf_alloc(&buf_cfg);
+	if (ret < 0)
+		goto fail;
+
+	ret = xen_front_pgdir_shbuf_map(&stream->shbuf);
+	if (ret < 0)
+		goto fail;
 
 	return 0;
+
+fail:
+	stream_free(stream);
+	dev_err(&front_info->xb_dev->dev,
+		"Failed to allocate buffers for stream with index %d\n",
+		stream->index);
+	return ret;
 }
 
 static int alsa_hw_free(struct snd_pcm_substream *substream)
 {
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
 	int ret;
+
+	xen_snd_front_evtchnl_set_connected(&stream->evt_pair->evt, false);
 
 	ret = xen_snd_front_stream_close(&stream->evt_pair->req);
 	stream_free(stream);
@@ -476,7 +524,7 @@ static int alsa_prepare(struct snd_pcm_substream *substream)
 		sndif_format = ret;
 
 		ret = xen_snd_front_stream_prepare(&stream->evt_pair->req,
-						   &stream->sh_buf,
+						   &stream->shbuf,
 						   sndif_format,
 						   runtime->channels,
 						   runtime->rate,
@@ -486,6 +534,7 @@ static int alsa_prepare(struct snd_pcm_substream *substream)
 			return ret;
 
 		stream->is_open = true;
+		xen_snd_front_evtchnl_set_connected(&stream->evt_pair->evt, true);
 	}
 
 	return 0;
@@ -525,20 +574,24 @@ void xen_snd_front_alsa_handle_cur_pos(struct xen_snd_front_evtchnl *evtchnl,
 {
 	struct snd_pcm_substream *substream = evtchnl->u.evt.substream;
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	snd_pcm_uframes_t delta, new_hw_ptr, cur_frame;
 
-	cur_frame = bytes_to_frames(substream->runtime, pos_bytes);
+	if (!runtime->buffer_size || !runtime->period_size)
+		return;
+
+	cur_frame = bytes_to_frames(runtime, pos_bytes);
 
 	delta = cur_frame - stream->be_cur_frame;
 	stream->be_cur_frame = cur_frame;
 
 	new_hw_ptr = (snd_pcm_uframes_t)atomic_read(&stream->hw_ptr);
-	new_hw_ptr = (new_hw_ptr + delta) % substream->runtime->buffer_size;
+	new_hw_ptr = (new_hw_ptr + delta) % runtime->buffer_size;
 	atomic_set(&stream->hw_ptr, (int)new_hw_ptr);
 
 	stream->out_frames += delta;
-	if (stream->out_frames > substream->runtime->period_size) {
-		stream->out_frames %= substream->runtime->period_size;
+	if (stream->out_frames > runtime->period_size) {
+		stream->out_frames %= runtime->period_size;
 		snd_pcm_period_elapsed(substream);
 	}
 }
@@ -550,69 +603,37 @@ static snd_pcm_uframes_t alsa_pointer(struct snd_pcm_substream *substream)
 	return (snd_pcm_uframes_t)atomic_read(&stream->hw_ptr);
 }
 
-static int alsa_pb_copy_user(struct snd_pcm_substream *substream,
-			     int channel, unsigned long pos, void __user *src,
-			     unsigned long count)
+static int alsa_pb_copy(struct snd_pcm_substream *substream,
+			int channel, unsigned long pos, struct iov_iter *src,
+			unsigned long count)
 {
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
 
-	if (unlikely(pos + count > stream->sh_buf.buffer_sz))
+	if (unlikely(pos + count > stream->buffer_sz))
 		return -EINVAL;
 
-	if (copy_from_user(stream->sh_buf.buffer + pos, src, count))
+	if (copy_from_iter(stream->buffer + pos, count, src) != count)
 		return -EFAULT;
 
 	return xen_snd_front_stream_write(&stream->evt_pair->req, pos, count);
 }
 
-static int alsa_pb_copy_kernel(struct snd_pcm_substream *substream,
-			       int channel, unsigned long pos, void *src,
-			       unsigned long count)
-{
-	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
-
-	if (unlikely(pos + count > stream->sh_buf.buffer_sz))
-		return -EINVAL;
-
-	memcpy(stream->sh_buf.buffer + pos, src, count);
-
-	return xen_snd_front_stream_write(&stream->evt_pair->req, pos, count);
-}
-
-static int alsa_cap_copy_user(struct snd_pcm_substream *substream,
-			      int channel, unsigned long pos, void __user *dst,
-			      unsigned long count)
+static int alsa_cap_copy(struct snd_pcm_substream *substream,
+			 int channel, unsigned long pos, struct iov_iter *dst,
+			 unsigned long count)
 {
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
 	int ret;
 
-	if (unlikely(pos + count > stream->sh_buf.buffer_sz))
+	if (unlikely(pos + count > stream->buffer_sz))
 		return -EINVAL;
 
 	ret = xen_snd_front_stream_read(&stream->evt_pair->req, pos, count);
 	if (ret < 0)
 		return ret;
 
-	return copy_to_user(dst, stream->sh_buf.buffer + pos, count) ?
-		-EFAULT : 0;
-}
-
-static int alsa_cap_copy_kernel(struct snd_pcm_substream *substream,
-				int channel, unsigned long pos, void *dst,
-				unsigned long count)
-{
-	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
-	int ret;
-
-	if (unlikely(pos + count > stream->sh_buf.buffer_sz))
-		return -EINVAL;
-
-	ret = xen_snd_front_stream_read(&stream->evt_pair->req, pos, count);
-	if (ret < 0)
-		return ret;
-
-	memcpy(dst, stream->sh_buf.buffer + pos, count);
-
+	if (copy_to_iter(stream->buffer + pos, count, dst) != count)
+		return -EFAULT;
 	return 0;
 }
 
@@ -622,10 +643,10 @@ static int alsa_pb_fill_silence(struct snd_pcm_substream *substream,
 {
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
 
-	if (unlikely(pos + count > stream->sh_buf.buffer_sz))
+	if (unlikely(pos + count > stream->buffer_sz))
 		return -EINVAL;
 
-	memset(stream->sh_buf.buffer + pos, 0, count);
+	memset(stream->buffer + pos, 0, count);
 
 	return xen_snd_front_stream_write(&stream->evt_pair->req, pos, count);
 }
@@ -637,31 +658,27 @@ static int alsa_pb_fill_silence(struct snd_pcm_substream *substream,
  * to know when the buffer can be transferred to the backend.
  */
 
-static struct snd_pcm_ops snd_drv_alsa_playback_ops = {
-	.open = alsa_open,
-	.close = alsa_close,
-	.ioctl = snd_pcm_lib_ioctl,
-	.hw_params = alsa_hw_params,
-	.hw_free = alsa_hw_free,
-	.prepare = alsa_prepare,
-	.trigger = alsa_trigger,
-	.pointer = alsa_pointer,
-	.copy_user = alsa_pb_copy_user,
-	.copy_kernel = alsa_pb_copy_kernel,
-	.fill_silence = alsa_pb_fill_silence,
+static const struct snd_pcm_ops snd_drv_alsa_playback_ops = {
+	.open		= alsa_open,
+	.close		= alsa_close,
+	.hw_params	= alsa_hw_params,
+	.hw_free	= alsa_hw_free,
+	.prepare	= alsa_prepare,
+	.trigger	= alsa_trigger,
+	.pointer	= alsa_pointer,
+	.copy		= alsa_pb_copy,
+	.fill_silence	= alsa_pb_fill_silence,
 };
 
-static struct snd_pcm_ops snd_drv_alsa_capture_ops = {
-	.open = alsa_open,
-	.close = alsa_close,
-	.ioctl = snd_pcm_lib_ioctl,
-	.hw_params = alsa_hw_params,
-	.hw_free = alsa_hw_free,
-	.prepare = alsa_prepare,
-	.trigger = alsa_trigger,
-	.pointer = alsa_pointer,
-	.copy_user = alsa_cap_copy_user,
-	.copy_kernel = alsa_cap_copy_kernel,
+static const struct snd_pcm_ops snd_drv_alsa_capture_ops = {
+	.open		= alsa_open,
+	.close		= alsa_close,
+	.hw_params	= alsa_hw_params,
+	.hw_free	= alsa_hw_free,
+	.prepare	= alsa_prepare,
+	.trigger	= alsa_trigger,
+	.pointer	= alsa_pointer,
+	.copy		= alsa_cap_copy,
 };
 
 static int new_pcm_instance(struct xen_snd_front_card_info *card_info,
@@ -733,7 +750,7 @@ static int new_pcm_instance(struct xen_snd_front_card_info *card_info,
 	pcm->info_flags = 0;
 	/* we want to handle all PCM operations in non-atomic context */
 	pcm->nonatomic = true;
-	strncpy(pcm->name, "Virtual card PCM", sizeof(pcm->name));
+	strscpy(pcm->name, "Virtual card PCM", sizeof(pcm->name));
 
 	if (instance_cfg->num_streams_pb)
 		snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK,
@@ -785,9 +802,9 @@ int xen_snd_front_alsa_init(struct xen_snd_front_info *front_info)
 			goto fail;
 	}
 
-	strncpy(card->driver, XENSND_DRIVER_NAME, sizeof(card->driver));
-	strncpy(card->shortname, cfg->name_short, sizeof(card->shortname));
-	strncpy(card->longname, cfg->name_long, sizeof(card->longname));
+	strscpy(card->driver, XENSND_DRIVER_NAME, sizeof(card->driver));
+	strscpy(card->shortname, cfg->name_short, sizeof(card->shortname));
+	strscpy(card->longname, cfg->name_long, sizeof(card->longname));
 
 	ret = snd_card_register(card);
 	if (ret < 0)

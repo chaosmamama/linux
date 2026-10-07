@@ -1,18 +1,9 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * AMCC SoC PPC4xx Crypto Driver
  *
  * Copyright (c) 2008 Applied Micro Circuits Corporation.
  * All rights reserved. James Hsiao <jhsiao@amcc.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * This file implements AMCC crypto offload Linux device driver for use with
  * Linux CryptoAPI.
@@ -39,7 +30,7 @@
 #include <crypto/aes.h>
 #include <crypto/ctr.h>
 #include <crypto/gcm.h>
-#include <crypto/sha.h>
+#include <crypto/sha1.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/skcipher.h>
 #include <crypto/internal/aead.h>
@@ -51,7 +42,7 @@
 
 #define PPC4XX_SEC_VERSION_STR			"0.5"
 
-/**
+/*
  * PPC4xx Crypto Engine Initialization Routine
  */
 static void crypto4xx_hw_init(struct crypto4xx_device *dev)
@@ -166,7 +157,7 @@ void crypto4xx_free_sa(struct crypto4xx_ctx *ctx)
 	ctx->sa_len = 0;
 }
 
-/**
+/*
  * alloc memory for the gather ring
  * no need to alloc buf for the ring
  * gdr_tail, gdr_head and gdr_count are initialized by this function
@@ -176,12 +167,11 @@ static u32 crypto4xx_build_pdr(struct crypto4xx_device *dev)
 	int i;
 	dev->pdr = dma_alloc_coherent(dev->core_dev->device,
 				      sizeof(struct ce_pd) * PPC4XX_NUM_PD,
-				      &dev->pdr_pa, GFP_ATOMIC);
+				      &dev->pdr_pa, GFP_KERNEL);
 	if (!dev->pdr)
 		return -ENOMEM;
 
-	dev->pdr_uinfo = kcalloc(PPC4XX_NUM_PD, sizeof(struct pd_uinfo),
-				 GFP_KERNEL);
+	dev->pdr_uinfo = kzalloc_objs(struct pd_uinfo, PPC4XX_NUM_PD);
 	if (!dev->pdr_uinfo) {
 		dma_free_coherent(dev->core_dev->device,
 				  sizeof(struct ce_pd) * PPC4XX_NUM_PD,
@@ -189,17 +179,16 @@ static u32 crypto4xx_build_pdr(struct crypto4xx_device *dev)
 				  dev->pdr_pa);
 		return -ENOMEM;
 	}
-	memset(dev->pdr, 0, sizeof(struct ce_pd) * PPC4XX_NUM_PD);
 	dev->shadow_sa_pool = dma_alloc_coherent(dev->core_dev->device,
 				   sizeof(union shadow_sa_buf) * PPC4XX_NUM_PD,
 				   &dev->shadow_sa_pool_pa,
-				   GFP_ATOMIC);
+				   GFP_KERNEL);
 	if (!dev->shadow_sa_pool)
 		return -ENOMEM;
 
 	dev->shadow_sr_pool = dma_alloc_coherent(dev->core_dev->device,
 			 sizeof(struct sa_state_record) * PPC4XX_NUM_PD,
-			 &dev->shadow_sr_pool_pa, GFP_ATOMIC);
+			 &dev->shadow_sr_pool_pa, GFP_KERNEL);
 	if (!dev->shadow_sr_pool)
 		return -ENOMEM;
 	for (i = 0; i < PPC4XX_NUM_PD; i++) {
@@ -276,16 +265,16 @@ static u32 crypto4xx_put_pd_to_pdr(struct crypto4xx_device *dev, u32 idx)
 	return tail;
 }
 
-/**
+/*
  * alloc memory for the gather ring
  * no need to alloc buf for the ring
  * gdr_tail, gdr_head and gdr_count are initialized by this function
  */
 static u32 crypto4xx_build_gdr(struct crypto4xx_device *dev)
 {
-	dev->gdr = dma_zalloc_coherent(dev->core_dev->device,
-				       sizeof(struct ce_gd) * PPC4XX_NUM_GD,
-				       &dev->gdr_pa, GFP_ATOMIC);
+	dev->gdr = dma_alloc_coherent(dev->core_dev->device,
+				      sizeof(struct ce_gd) * PPC4XX_NUM_GD,
+				      &dev->gdr_pa, GFP_KERNEL);
 	if (!dev->gdr)
 		return -ENOMEM;
 
@@ -294,7 +283,8 @@ static u32 crypto4xx_build_gdr(struct crypto4xx_device *dev)
 
 static inline void crypto4xx_destroy_gdr(struct crypto4xx_device *dev)
 {
-	dma_free_coherent(dev->core_dev->device,
+	if (dev->gdr)
+		dma_free_coherent(dev->core_dev->device,
 			  sizeof(struct ce_gd) * PPC4XX_NUM_GD,
 			  dev->gdr, dev->gdr_pa);
 }
@@ -353,7 +343,7 @@ static inline struct ce_gd *crypto4xx_get_gdp(struct crypto4xx_device *dev,
 	return &dev->gdr[idx];
 }
 
-/**
+/*
  * alloc memory for the scatter ring
  * need to alloc buf for the ring
  * sdr_tail, sdr_head and sdr_count are initialized by this function
@@ -362,23 +352,19 @@ static u32 crypto4xx_build_sdr(struct crypto4xx_device *dev)
 {
 	int i;
 
-	/* alloc memory for scatter descriptor ring */
-	dev->sdr = dma_alloc_coherent(dev->core_dev->device,
-				      sizeof(struct ce_sd) * PPC4XX_NUM_SD,
-				      &dev->sdr_pa, GFP_ATOMIC);
-	if (!dev->sdr)
-		return -ENOMEM;
-
 	dev->scatter_buffer_va =
 		dma_alloc_coherent(dev->core_dev->device,
 			PPC4XX_SD_BUFFER_SIZE * PPC4XX_NUM_SD,
-			&dev->scatter_buffer_pa, GFP_ATOMIC);
-	if (!dev->scatter_buffer_va) {
-		dma_free_coherent(dev->core_dev->device,
-				  sizeof(struct ce_sd) * PPC4XX_NUM_SD,
-				  dev->sdr, dev->sdr_pa);
+			&dev->scatter_buffer_pa, GFP_KERNEL);
+	if (!dev->scatter_buffer_va)
 		return -ENOMEM;
-	}
+
+	/* alloc memory for scatter descriptor ring */
+	dev->sdr = dma_alloc_coherent(dev->core_dev->device,
+				      sizeof(struct ce_sd) * PPC4XX_NUM_SD,
+				      &dev->sdr_pa, GFP_KERNEL);
+	if (!dev->sdr)
+		return -ENOMEM;
 
 	for (i = 0; i < PPC4XX_NUM_SD; i++) {
 		dev->sdr[i].ptr = dev->scatter_buffer_pa +
@@ -496,18 +482,6 @@ static void crypto4xx_copy_pkt_to_dst(struct crypto4xx_device *dev,
 	}
 }
 
-static void crypto4xx_copy_digest_to_dst(void *dst,
-					struct pd_uinfo *pd_uinfo,
-					struct crypto4xx_ctx *ctx)
-{
-	struct dynamic_sa_ctl *sa = (struct dynamic_sa_ctl *) ctx->sa_in;
-
-	if (sa->sa_command_0.bf.hash_alg == SA_HASH_ALG_SHA1) {
-		memcpy(dst, pd_uinfo->sr_va->save_digest,
-		       SA_HASH_ALG_SHA1_DIGEST_SIZE);
-	}
-}
-
 static void crypto4xx_ret_sg_desc(struct crypto4xx_device *dev,
 				  struct pd_uinfo *pd_uinfo)
 {
@@ -533,17 +507,16 @@ static void crypto4xx_cipher_done(struct crypto4xx_device *dev,
 {
 	struct skcipher_request *req;
 	struct scatterlist *dst;
-	dma_addr_t addr;
 
 	req = skcipher_request_cast(pd_uinfo->async_req);
 
-	if (pd_uinfo->using_sd) {
+	if (pd_uinfo->sa_va->sa_command_0.bf.scatter) {
 		crypto4xx_copy_pkt_to_dst(dev, pd, pd_uinfo,
 					  req->cryptlen, req->dst);
 	} else {
 		dst = pd_uinfo->dest_va;
-		addr = dma_map_page(dev->core_dev->device, sg_page(dst),
-				    dst->offset, dst->length, DMA_FROM_DEVICE);
+		dma_unmap_page(dev->core_dev->device, pd->dest, dst->length,
+			       DMA_FROM_DEVICE);
 	}
 
 	if (pd_uinfo->sa_va->sa_command_0.bf.save_iv == SA_SAVE_IV) {
@@ -561,24 +534,6 @@ static void crypto4xx_cipher_done(struct crypto4xx_device *dev,
 	skcipher_request_complete(req, 0);
 }
 
-static void crypto4xx_ahash_done(struct crypto4xx_device *dev,
-				struct pd_uinfo *pd_uinfo)
-{
-	struct crypto4xx_ctx *ctx;
-	struct ahash_request *ahash_req;
-
-	ahash_req = ahash_request_cast(pd_uinfo->async_req);
-	ctx  = crypto_tfm_ctx(ahash_req->base.tfm);
-
-	crypto4xx_copy_digest_to_dst(ahash_req->result, pd_uinfo,
-				     crypto_tfm_ctx(ahash_req->base.tfm));
-	crypto4xx_ret_sg_desc(dev, pd_uinfo);
-
-	if (pd_uinfo->state & PD_ENTRY_BUSY)
-		ahash_request_complete(ahash_req, -EINPROGRESS);
-	ahash_request_complete(ahash_req, 0);
-}
-
 static void crypto4xx_aead_done(struct crypto4xx_device *dev,
 				struct pd_uinfo *pd_uinfo,
 				struct ce_pd *pd)
@@ -591,12 +546,12 @@ static void crypto4xx_aead_done(struct crypto4xx_device *dev,
 	u32 icv[AES_BLOCK_SIZE];
 	int err = 0;
 
-	if (pd_uinfo->using_sd) {
+	if (pd_uinfo->sa_va->sa_command_0.bf.scatter) {
 		crypto4xx_copy_pkt_to_dst(dev, pd, pd_uinfo,
 					  pd->pd_ctl_len.bf.pkt_len,
 					  dst);
 	} else {
-		__dma_sync_page(sg_page(dst), dst->offset, dst->length,
+		dma_unmap_page(dev->core_dev->device, pd->dest, dst->length,
 				DMA_FROM_DEVICE);
 	}
 
@@ -655,9 +610,6 @@ static void crypto4xx_pd_done(struct crypto4xx_device *dev, u32 idx)
 	case CRYPTO_ALG_TYPE_AEAD:
 		crypto4xx_aead_done(dev, pd_uinfo, pd);
 		break;
-	case CRYPTO_ALG_TYPE_AHASH:
-		crypto4xx_ahash_done(dev, pd_uinfo);
-		break;
 	}
 }
 
@@ -666,9 +618,6 @@ static void crypto4xx_stop_all(struct crypto4xx_core_device *core_dev)
 	crypto4xx_destroy_pdr(core_dev->dev);
 	crypto4xx_destroy_gdr(core_dev->dev);
 	crypto4xx_destroy_sdr(core_dev->dev);
-	iounmap(core_dev->dev->ce_base);
-	kfree(core_dev->dev);
-	kfree(core_dev);
 }
 
 static u32 get_next_gd(u32 current)
@@ -692,7 +641,7 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 		       struct scatterlist *src,
 		       struct scatterlist *dst,
 		       const unsigned int datalen,
-		       const __le32 *iv, const u32 iv_len,
+		       const void *iv, const u32 iv_len,
 		       const struct dynamic_sa_ctl *req_sa,
 		       const unsigned int sa_len,
 		       const unsigned int assoclen,
@@ -712,7 +661,23 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 	size_t offset_to_sr_ptr;
 	u32 gd_idx = 0;
 	int tmp;
-	bool is_busy;
+	bool is_busy, force_sd;
+
+	/*
+	 * There's a very subtile/disguised "bug" in the hardware that
+	 * gets indirectly mentioned in 18.1.3.5 Encryption/Decryption
+	 * of the hardware spec:
+	 * *drum roll* the AES/(T)DES OFB and CFB modes are listed as
+	 * operation modes for >>> "Block ciphers" <<<.
+	 *
+	 * To workaround this issue and stop the hardware from causing
+	 * "overran dst buffer" on crypttexts that are not a multiple
+	 * of 16 (AES_BLOCK_SIZE), we force the driver to use the
+	 * scatter buffers.
+	 */
+	force_sd = (req_sa->sa_command_1.bf.crypto_mode9_8 == CRYPTO_MODE_CFB
+		|| req_sa->sa_command_1.bf.crypto_mode9_8 == CRYPTO_MODE_OFB)
+		&& (datalen % AES_BLOCK_SIZE);
 
 	/* figure how many gd are needed */
 	tmp = sg_nents_for_len(src, assoclen + datalen);
@@ -730,7 +695,7 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 	}
 
 	/* figure how many sd are needed */
-	if (sg_is_last(dst)) {
+	if (sg_is_last(dst) && force_sd == false) {
 		num_sd = 0;
 	} else {
 		if (datalen > PPC4XX_SD_BUFFER_SIZE) {
@@ -805,9 +770,10 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 	pd->sa_len = sa_len;
 
 	pd_uinfo = &dev->pdr_uinfo[pd_entry];
-	pd_uinfo->async_req = req;
 	pd_uinfo->num_gd = num_gd;
 	pd_uinfo->num_sd = num_sd;
+	pd_uinfo->dest_va = dst;
+	pd_uinfo->async_req = req;
 
 	if (iv_len)
 		memcpy(pd_uinfo->sr_va->save_iv, iv, iv_len);
@@ -826,7 +792,6 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 		/* get first gd we are going to use */
 		gd_idx = fst_gd;
 		pd_uinfo->first_gd = fst_gd;
-		pd_uinfo->num_gd = num_gd;
 		gd = crypto4xx_get_gdp(dev, &gd_dma, gd_idx);
 		pd->src = gd_dma;
 		/* enable gather */
@@ -863,17 +828,13 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 		 * Indicate gather array is not used
 		 */
 		pd_uinfo->first_gd = 0xffffffff;
-		pd_uinfo->num_gd = 0;
 	}
-	if (sg_is_last(dst)) {
+	if (!num_sd) {
 		/*
 		 * we know application give us dst a whole piece of memory
 		 * no need to use scatter ring.
 		 */
-		pd_uinfo->using_sd = 0;
 		pd_uinfo->first_sd = 0xffffffff;
-		pd_uinfo->num_sd = 0;
-		pd_uinfo->dest_va = dst;
 		sa->sa_command_0.bf.scatter = 0;
 		pd->dest = (u32)dma_map_page(dev->core_dev->device,
 					     sg_page(dst), dst->offset,
@@ -886,10 +847,7 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 		u32 sd_idx = fst_sd;
 		nbytes = datalen;
 		sa->sa_command_0.bf.scatter = 1;
-		pd_uinfo->using_sd = 1;
-		pd_uinfo->dest_va = dst;
 		pd_uinfo->first_sd = fst_sd;
-		pd_uinfo->num_sd = num_sd;
 		sd = crypto4xx_get_sdp(dev, &sd_dma, sd_idx);
 		pd->dest = sd_dma;
 		/* setup scatter descriptor */
@@ -919,8 +877,7 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 	}
 
 	pd->pd_ctl.w = PD_CTL_HOST_READY |
-		((crypto_tfm_alg_type(req->tfm) == CRYPTO_ALG_TYPE_AHASH) |
-		 (crypto_tfm_alg_type(req->tfm) == CRYPTO_ALG_TYPE_AEAD) ?
+		((crypto_tfm_alg_type(req->tfm) == CRYPTO_ALG_TYPE_AEAD) ?
 			PD_CTL_HASH_FINAL : 0);
 	pd->pd_ctl_len.w = 0x00400000 | (assoclen + datalen);
 	pd_uinfo->state = PD_ENTRY_INUSE | (is_busy ? PD_ENTRY_BUSY : 0);
@@ -932,7 +889,7 @@ int crypto4xx_build_pd(struct crypto_async_request *req,
 	return is_busy ? -EBUSY : -EINPROGRESS;
 }
 
-/**
+/*
  * Algorithm Registration Functions
  */
 static void crypto4xx_ctx_init(struct crypto4xx_alg *amcc_alg,
@@ -952,15 +909,10 @@ static int crypto4xx_sk_init(struct crypto_skcipher *sk)
 
 	if (alg->base.cra_flags & CRYPTO_ALG_NEED_FALLBACK) {
 		ctx->sw_cipher.cipher =
-			crypto_alloc_skcipher(alg->base.cra_name, 0,
-					      CRYPTO_ALG_NEED_FALLBACK |
-					      CRYPTO_ALG_ASYNC);
+			crypto_alloc_sync_skcipher(alg->base.cra_name, 0,
+					      CRYPTO_ALG_NEED_FALLBACK);
 		if (IS_ERR(ctx->sw_cipher.cipher))
 			return PTR_ERR(ctx->sw_cipher.cipher);
-
-		crypto_skcipher_set_reqsize(sk,
-			sizeof(struct skcipher_request) + 32 +
-			crypto_skcipher_reqsize(ctx->sw_cipher.cipher));
 	}
 
 	amcc_alg = container_of(alg, struct crypto4xx_alg, alg.u.cipher);
@@ -979,7 +931,7 @@ static void crypto4xx_sk_exit(struct crypto_skcipher *sk)
 
 	crypto4xx_common_exit(ctx);
 	if (ctx->sw_cipher.cipher)
-		crypto_free_skcipher(ctx->sw_cipher.cipher);
+		crypto_free_sync_skcipher(ctx->sw_cipher.cipher);
 }
 
 static int crypto4xx_aead_init(struct crypto_aead *tfm)
@@ -1019,7 +971,7 @@ static int crypto4xx_register_alg(struct crypto4xx_device *sec_dev,
 	int rc = 0;
 
 	for (i = 0; i < array_size; i++) {
-		alg = kzalloc(sizeof(struct crypto4xx_alg), GFP_KERNEL);
+		alg = kzalloc_obj(struct crypto4xx_alg);
 		if (!alg)
 			return -ENOMEM;
 
@@ -1029,10 +981,6 @@ static int crypto4xx_register_alg(struct crypto4xx_device *sec_dev,
 		switch (alg->alg.type) {
 		case CRYPTO_ALG_TYPE_AEAD:
 			rc = crypto_register_aead(&alg->alg.u.aead);
-			break;
-
-		case CRYPTO_ALG_TYPE_AHASH:
-			rc = crypto_register_ahash(&alg->alg.u.hash);
 			break;
 
 		default:
@@ -1056,10 +1004,6 @@ static void crypto4xx_unregister_alg(struct crypto4xx_device *sec_dev)
 	list_for_each_entry_safe(alg, tmp, &sec_dev->alg_list, entry) {
 		list_del(&alg->entry);
 		switch (alg->alg.type) {
-		case CRYPTO_ALG_TYPE_AHASH:
-			crypto_unregister_ahash(&alg->alg.u.hash);
-			break;
-
 		case CRYPTO_ALG_TYPE_AEAD:
 			crypto_unregister_aead(&alg->alg.u.aead);
 			break;
@@ -1096,13 +1040,13 @@ static void crypto4xx_bh_tasklet_cb(unsigned long data)
 	} while (head != tail);
 }
 
-/**
+/*
  * Top Half of isr.
  */
 static inline irqreturn_t crypto4xx_interrupt_handler(int irq, void *data,
 						      u32 clr_val)
 {
-	struct device *dev = (struct device *)data;
+	struct device *dev = data;
 	struct crypto4xx_core_device *core_dev = dev_get_drvdata(dev);
 
 	writel(clr_val, core_dev->dev->ce_base + CRYPTO4XX_INT_CLR);
@@ -1122,7 +1066,7 @@ static irqreturn_t crypto4xx_ce_interrupt_handler_revb(int irq, void *data)
 		PPC4XX_TMO_ERR_INT);
 }
 
-/**
+/*
  * Supported Crypto Algorithms
  */
 static struct crypto4xx_alg_common crypto4xx_alg[] = {
@@ -1132,8 +1076,7 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 			.cra_name = "cbc(aes)",
 			.cra_driver_name = "cbc-aes-ppc4xx",
 			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_ASYNC |
+			.cra_flags = CRYPTO_ALG_ASYNC |
 				CRYPTO_ALG_KERN_DRIVER_ONLY,
 			.cra_blocksize = AES_BLOCK_SIZE,
 			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
@@ -1143,29 +1086,8 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 		.max_keysize = AES_MAX_KEY_SIZE,
 		.ivsize	= AES_IV_SIZE,
 		.setkey = crypto4xx_setkey_aes_cbc,
-		.encrypt = crypto4xx_encrypt_iv,
-		.decrypt = crypto4xx_decrypt_iv,
-		.init = crypto4xx_sk_init,
-		.exit = crypto4xx_sk_exit,
-	} },
-	{ .type = CRYPTO_ALG_TYPE_SKCIPHER, .u.cipher = {
-		.base = {
-			.cra_name = "cfb(aes)",
-			.cra_driver_name = "cfb-aes-ppc4xx",
-			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_ASYNC |
-				CRYPTO_ALG_KERN_DRIVER_ONLY,
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
-			.cra_module = THIS_MODULE,
-		},
-		.min_keysize = AES_MIN_KEY_SIZE,
-		.max_keysize = AES_MAX_KEY_SIZE,
-		.ivsize	= AES_IV_SIZE,
-		.setkey	= crypto4xx_setkey_aes_cfb,
-		.encrypt = crypto4xx_encrypt_iv,
-		.decrypt = crypto4xx_decrypt_iv,
+		.encrypt = crypto4xx_encrypt_iv_block,
+		.decrypt = crypto4xx_decrypt_iv_block,
 		.init = crypto4xx_sk_init,
 		.exit = crypto4xx_sk_exit,
 	} },
@@ -1174,11 +1096,10 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 			.cra_name = "ctr(aes)",
 			.cra_driver_name = "ctr-aes-ppc4xx",
 			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_NEED_FALLBACK |
+			.cra_flags = CRYPTO_ALG_NEED_FALLBACK |
 				CRYPTO_ALG_ASYNC |
 				CRYPTO_ALG_KERN_DRIVER_ONLY,
-			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_blocksize = 1,
 			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
 			.cra_module = THIS_MODULE,
 		},
@@ -1196,10 +1117,9 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 			.cra_name = "rfc3686(ctr(aes))",
 			.cra_driver_name = "rfc3686-ctr-aes-ppc4xx",
 			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_ASYNC |
+			.cra_flags = CRYPTO_ALG_ASYNC |
 				CRYPTO_ALG_KERN_DRIVER_ONLY,
-			.cra_blocksize = AES_BLOCK_SIZE,
+			.cra_blocksize = 1,
 			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
 			.cra_module = THIS_MODULE,
 		},
@@ -1217,8 +1137,7 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 			.cra_name = "ecb(aes)",
 			.cra_driver_name = "ecb-aes-ppc4xx",
 			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_ASYNC |
+			.cra_flags = CRYPTO_ALG_ASYNC |
 				CRYPTO_ALG_KERN_DRIVER_ONLY,
 			.cra_blocksize = AES_BLOCK_SIZE,
 			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
@@ -1227,29 +1146,8 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 		.min_keysize = AES_MIN_KEY_SIZE,
 		.max_keysize = AES_MAX_KEY_SIZE,
 		.setkey	= crypto4xx_setkey_aes_ecb,
-		.encrypt = crypto4xx_encrypt_noiv,
-		.decrypt = crypto4xx_decrypt_noiv,
-		.init = crypto4xx_sk_init,
-		.exit = crypto4xx_sk_exit,
-	} },
-	{ .type = CRYPTO_ALG_TYPE_SKCIPHER, .u.cipher = {
-		.base = {
-			.cra_name = "ofb(aes)",
-			.cra_driver_name = "ofb-aes-ppc4xx",
-			.cra_priority = CRYPTO4XX_CRYPTO_PRIORITY,
-			.cra_flags = CRYPTO_ALG_TYPE_SKCIPHER |
-				CRYPTO_ALG_ASYNC |
-				CRYPTO_ALG_KERN_DRIVER_ONLY,
-			.cra_blocksize = AES_BLOCK_SIZE,
-			.cra_ctxsize = sizeof(struct crypto4xx_ctx),
-			.cra_module = THIS_MODULE,
-		},
-		.min_keysize = AES_MIN_KEY_SIZE,
-		.max_keysize = AES_MAX_KEY_SIZE,
-		.ivsize	= AES_IV_SIZE,
-		.setkey	= crypto4xx_setkey_aes_ofb,
-		.encrypt = crypto4xx_encrypt_iv,
-		.decrypt = crypto4xx_decrypt_iv,
+		.encrypt = crypto4xx_encrypt_noiv_block,
+		.decrypt = crypto4xx_decrypt_noiv_block,
 		.init = crypto4xx_sk_init,
 		.exit = crypto4xx_sk_exit,
 	} },
@@ -1299,55 +1197,63 @@ static struct crypto4xx_alg_common crypto4xx_alg[] = {
 	} },
 };
 
-/**
+/*
  * Module Initialization Routine
  */
 static int crypto4xx_probe(struct platform_device *ofdev)
 {
 	int rc;
-	struct resource res;
 	struct device *dev = &ofdev->dev;
 	struct crypto4xx_core_device *core_dev;
+	struct device_node *np;
 	u32 pvr;
 	bool is_revb = true;
 
-	rc = of_address_to_resource(ofdev->dev.of_node, 0, &res);
-	if (rc)
-		return -ENODEV;
-
-	if (of_find_compatible_node(NULL, NULL, "amcc,ppc460ex-crypto")) {
+	np = of_find_compatible_node(NULL, NULL, "amcc,ppc460ex-crypto");
+	if (np) {
 		mtdcri(SDR0, PPC460EX_SDR0_SRST,
 		       mfdcri(SDR0, PPC460EX_SDR0_SRST) | PPC460EX_CE_RESET);
 		mtdcri(SDR0, PPC460EX_SDR0_SRST,
 		       mfdcri(SDR0, PPC460EX_SDR0_SRST) & ~PPC460EX_CE_RESET);
-	} else if (of_find_compatible_node(NULL, NULL,
-			"amcc,ppc405ex-crypto")) {
-		mtdcri(SDR0, PPC405EX_SDR0_SRST,
-		       mfdcri(SDR0, PPC405EX_SDR0_SRST) | PPC405EX_CE_RESET);
-		mtdcri(SDR0, PPC405EX_SDR0_SRST,
-		       mfdcri(SDR0, PPC405EX_SDR0_SRST) & ~PPC405EX_CE_RESET);
-		is_revb = false;
-	} else if (of_find_compatible_node(NULL, NULL,
-			"amcc,ppc460sx-crypto")) {
-		mtdcri(SDR0, PPC460SX_SDR0_SRST,
-		       mfdcri(SDR0, PPC460SX_SDR0_SRST) | PPC460SX_CE_RESET);
-		mtdcri(SDR0, PPC460SX_SDR0_SRST,
-		       mfdcri(SDR0, PPC460SX_SDR0_SRST) & ~PPC460SX_CE_RESET);
 	} else {
-		printk(KERN_ERR "Crypto Function Not supported!\n");
-		return -EINVAL;
+		np = of_find_compatible_node(NULL, NULL, "amcc,ppc405ex-crypto");
+		if (np) {
+			mtdcri(SDR0, PPC405EX_SDR0_SRST,
+				   mfdcri(SDR0, PPC405EX_SDR0_SRST) | PPC405EX_CE_RESET);
+			mtdcri(SDR0, PPC405EX_SDR0_SRST,
+				   mfdcri(SDR0, PPC405EX_SDR0_SRST) & ~PPC405EX_CE_RESET);
+			is_revb = false;
+		} else {
+			np = of_find_compatible_node(NULL, NULL, "amcc,ppc460sx-crypto");
+			if (np) {
+				mtdcri(SDR0, PPC460SX_SDR0_SRST,
+					mfdcri(SDR0, PPC460SX_SDR0_SRST) | PPC460SX_CE_RESET);
+				mtdcri(SDR0, PPC460SX_SDR0_SRST,
+					mfdcri(SDR0, PPC460SX_SDR0_SRST) & ~PPC460SX_CE_RESET);
+			} else {
+				printk(KERN_ERR "Crypto Function Not supported!\n");
+				return -EINVAL;
+			}
+		}
 	}
 
-	core_dev = kzalloc(sizeof(struct crypto4xx_core_device), GFP_KERNEL);
+	of_node_put(np);
+
+	core_dev = devm_kzalloc(
+		&ofdev->dev, sizeof(struct crypto4xx_core_device), GFP_KERNEL);
 	if (!core_dev)
 		return -ENOMEM;
 
 	dev_set_drvdata(dev, core_dev);
 	core_dev->ofdev = ofdev;
-	core_dev->dev = kzalloc(sizeof(struct crypto4xx_device), GFP_KERNEL);
-	rc = -ENOMEM;
+	core_dev->dev = devm_kzalloc(
+		&ofdev->dev, sizeof(struct crypto4xx_device), GFP_KERNEL);
 	if (!core_dev->dev)
-		goto err_alloc_dev;
+		return -ENOMEM;
+
+	core_dev->dev->ce_base = devm_platform_ioremap_resource(ofdev, 0);
+	if (IS_ERR(core_dev->dev->ce_base))
+		return PTR_ERR(core_dev->dev->ce_base);
 
 	/*
 	 * Older version of 460EX/GT have a hardware bug.
@@ -1369,15 +1275,14 @@ static int crypto4xx_probe(struct platform_device *ofdev)
 	spin_lock_init(&core_dev->lock);
 	INIT_LIST_HEAD(&core_dev->dev->alg_list);
 	ratelimit_default_init(&core_dev->dev->aead_ratelimit);
+	rc = crypto4xx_build_sdr(core_dev->dev);
+	if (rc)
+		goto err_build_sdr;
 	rc = crypto4xx_build_pdr(core_dev->dev);
 	if (rc)
-		goto err_build_pdr;
+		goto err_build_sdr;
 
 	rc = crypto4xx_build_gdr(core_dev->dev);
-	if (rc)
-		goto err_build_pdr;
-
-	rc = crypto4xx_build_sdr(core_dev->dev);
 	if (rc)
 		goto err_build_sdr;
 
@@ -1385,21 +1290,18 @@ static int crypto4xx_probe(struct platform_device *ofdev)
 	tasklet_init(&core_dev->tasklet, crypto4xx_bh_tasklet_cb,
 		     (unsigned long) dev);
 
-	core_dev->dev->ce_base = of_iomap(ofdev->dev.of_node, 0);
-	if (!core_dev->dev->ce_base) {
-		dev_err(dev, "failed to of_iomap\n");
-		rc = -ENOMEM;
-		goto err_iomap;
-	}
-
 	/* Register for Crypto isr, Crypto Engine IRQ */
-	core_dev->irq = irq_of_parse_and_map(ofdev->dev.of_node, 0);
-	rc = request_irq(core_dev->irq, is_revb ?
-			 crypto4xx_ce_interrupt_handler_revb :
-			 crypto4xx_ce_interrupt_handler, 0,
-			 KBUILD_MODNAME, dev);
+	core_dev->irq = platform_get_irq(ofdev, 0);
+	if (core_dev->irq < 0) {
+		rc = core_dev->irq;
+		goto err_tasklet;
+	}
+	rc = request_irq(core_dev->irq,
+			 is_revb ? crypto4xx_ce_interrupt_handler_revb :
+				   crypto4xx_ce_interrupt_handler,
+			 0, KBUILD_MODNAME, dev);
 	if (rc)
-		goto err_request_irq;
+		goto err_tasklet;
 
 	/* need to setup pdr, rdr, gdr and sdr before this */
 	crypto4xx_hw_init(core_dev->dev);
@@ -1408,47 +1310,39 @@ static int crypto4xx_probe(struct platform_device *ofdev)
 	rc = crypto4xx_register_alg(core_dev->dev, crypto4xx_alg,
 			       ARRAY_SIZE(crypto4xx_alg));
 	if (rc)
-		goto err_start_dev;
+		goto err_irq;
 
 	ppc4xx_trng_probe(core_dev);
 	return 0;
 
-err_start_dev:
+err_irq:
 	free_irq(core_dev->irq, dev);
-err_request_irq:
-	irq_dispose_mapping(core_dev->irq);
-	iounmap(core_dev->dev->ce_base);
-err_iomap:
+err_tasklet:
 	tasklet_kill(&core_dev->tasklet);
 err_build_sdr:
 	crypto4xx_destroy_sdr(core_dev->dev);
 	crypto4xx_destroy_gdr(core_dev->dev);
-err_build_pdr:
 	crypto4xx_destroy_pdr(core_dev->dev);
-	kfree(core_dev->dev);
-err_alloc_dev:
-	kfree(core_dev);
-
 	return rc;
 }
 
-static int crypto4xx_remove(struct platform_device *ofdev)
+static void crypto4xx_remove(struct platform_device *ofdev)
 {
 	struct device *dev = &ofdev->dev;
 	struct crypto4xx_core_device *core_dev = dev_get_drvdata(dev);
 
 	ppc4xx_trng_remove(core_dev);
 
+	/*
+	 * Free IRQ before killing the tasklet to prevent the interrupt
+	 * handler from rescheduling the tasklet after it has been killed.
+	 */
 	free_irq(core_dev->irq, dev);
-	irq_dispose_mapping(core_dev->irq);
-
 	tasklet_kill(&core_dev->tasklet);
 	/* Un-register with Linux CryptoAPI */
 	crypto4xx_unregister_alg(core_dev->dev);
 	/* Free all allocated memory */
 	crypto4xx_stop_all(core_dev);
-
-	return 0;
 }
 
 static const struct of_device_id crypto4xx_match[] = {

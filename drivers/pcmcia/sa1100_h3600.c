@@ -11,7 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/legacy.h>
 
 #include <mach/hardware.h>
 #include <asm/irq.h>
@@ -156,7 +156,7 @@ int pcmcia_h3600_init(struct device *dev)
 {
 	int ret = -ENODEV;
 
-	if (machine_is_h3600() || machine_is_h3100())
+	if (machine_is_h3600())
 		ret = sa11xx_drv_pcmcia_probe(dev, &h3600_pcmcia_ops, 0, 2);
 
 	return ret;

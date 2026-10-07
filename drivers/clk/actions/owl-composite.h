@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
+/* SPDX-License-Identifier: GPL-2.0+ */
 //
 // OWL composite clock driver
 //
@@ -108,7 +108,7 @@ struct owl_composite {
 		},							\
 	}
 
-static inline struct owl_composite *hw_to_owl_comp(const struct clk_hw *hw)
+static inline struct owl_composite *hw_to_owl_comp(struct clk_hw *hw)
 {
 	struct owl_clk_common *common = hw_to_owl_clk_common(hw);
 

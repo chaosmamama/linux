@@ -7,6 +7,7 @@
  */
 #include <linux/bitops.h>
 #include <linux/clk-provider.h>
+#include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/slab.h>
@@ -209,6 +210,7 @@ static unsigned long berlin2_div_recalc_rate(struct clk_hw *hw,
 }
 
 static const struct clk_ops berlin2_div_rate_ops = {
+	.determine_rate	= clk_hw_determine_rate_no_reparent,
 	.recalc_rate	= berlin2_div_recalc_rate,
 };
 
@@ -234,7 +236,7 @@ berlin2_div_register(const struct berlin2_div_map *map,
 	const struct clk_ops *gate_ops = &berlin2_div_gate_ops;
 	struct berlin2_div *div;
 
-	div = kzalloc(sizeof(*div), GFP_KERNEL);
+	div = kzalloc_obj(*div);
 	if (!div)
 		return ERR_PTR(-ENOMEM);
 

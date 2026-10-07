@@ -1,5 +1,7 @@
 #ifndef __NV50_KMS_BASE_H__
 #define __NV50_KMS_BASE_H__
+#include <drm/drm_blend.h>
+
 #include "wndw.h"
 
 int base507c_new(struct nouveau_drm *, int, s32, struct nv50_wndw **);
@@ -11,14 +13,10 @@ int base507c_acquire(struct nv50_wndw *, struct nv50_wndw_atom *,
 		     struct nv50_head_atom *);
 void base507c_release(struct nv50_wndw *, struct nv50_wndw_atom *,
 		      struct nv50_head_atom *);
-void base507c_sema_set(struct nv50_wndw *, struct nv50_wndw_atom *);
-void base507c_sema_clr(struct nv50_wndw *);
-void base507c_ntfy_set(struct nv50_wndw *, struct nv50_wndw_atom *);
-void base507c_ntfy_clr(struct nv50_wndw *);
-void base507c_xlut_set(struct nv50_wndw *, struct nv50_wndw_atom *);
-void base507c_xlut_clr(struct nv50_wndw *);
-void base507c_image_clr(struct nv50_wndw *);
-void base507c_update(struct nv50_wndw *, u32 *);
+int base507c_sema_set(struct nv50_wndw *, struct nv50_wndw_atom *);
+int base507c_sema_clr(struct nv50_wndw *);
+int base507c_xlut_set(struct nv50_wndw *, struct nv50_wndw_atom *);
+int base507c_xlut_clr(struct nv50_wndw *);
 
 int base827c_new(struct nouveau_drm *, int, s32, struct nv50_wndw **);
 
@@ -28,4 +26,8 @@ extern const struct nv50_wndw_func base907c;
 int base917c_new(struct nouveau_drm *, int, s32, struct nv50_wndw **);
 
 int nv50_base_new(struct nouveau_drm *, int head, struct nv50_wndw **);
+
+/* The only blend mode supported by base channels */
+#define BASE_BLEND_MODES BIT(DRM_MODE_BLEND_PIXEL_NONE)
+
 #endif

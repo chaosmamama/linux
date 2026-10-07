@@ -10,7 +10,6 @@
 
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
-#include <linux/slab.h>
 
 #include "owl-factor.h"
 
@@ -64,11 +63,10 @@ static unsigned int _get_table_val(const struct clk_factor_table *table,
 	return val;
 }
 
-static int clk_val_best(struct clk_hw *hw, unsigned long rate,
+static int owl_clk_val_best(const struct owl_factor_hw *factor_hw,
+			struct clk_hw *hw, unsigned long rate,
 			unsigned long *best_parent_rate)
 {
-	struct owl_factor *factor = hw_to_owl_factor(hw);
-	struct owl_factor_hw *factor_hw = &factor->factor_hw;
 	const struct clk_factor_table *clkt = factor_hw->table;
 	unsigned long parent_rate, try_parent_rate, best = 0, cur_rate;
 	unsigned long parent_rate_saved = *best_parent_rate;
@@ -126,20 +124,22 @@ long owl_factor_helper_round_rate(struct owl_clk_common *common,
 	const struct clk_factor_table *clkt = factor_hw->table;
 	unsigned int val, mul = 0, div = 1;
 
-	val = clk_val_best(&common->hw, rate, parent_rate);
+	val = owl_clk_val_best(factor_hw, &common->hw, rate, parent_rate);
 	_get_table_div_mul(clkt, val, &mul, &div);
 
 	return *parent_rate * mul / div;
 }
 
-static long owl_factor_round_rate(struct clk_hw *hw, unsigned long rate,
-			unsigned long *parent_rate)
+static int owl_factor_determine_rate(struct clk_hw *hw,
+				     struct clk_rate_request *req)
 {
 	struct owl_factor *factor = hw_to_owl_factor(hw);
 	struct owl_factor_hw *factor_hw = &factor->factor_hw;
 
-	return owl_factor_helper_round_rate(&factor->common, factor_hw,
-					rate, parent_rate);
+	req->rate = owl_factor_helper_round_rate(&factor->common, factor_hw,
+						 req->rate, &req->best_parent_rate);
+
+	return 0;
 }
 
 unsigned long owl_factor_helper_recalc_rate(struct owl_clk_common *common,
@@ -216,7 +216,7 @@ static int owl_factor_set_rate(struct clk_hw *hw, unsigned long rate,
 }
 
 const struct clk_ops owl_factor_ops = {
-	.round_rate	= owl_factor_round_rate,
+	.determine_rate = owl_factor_determine_rate,
 	.recalc_rate	= owl_factor_recalc_rate,
 	.set_rate	= owl_factor_set_rate,
 };

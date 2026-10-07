@@ -1,13 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 // Driver to detect Tablet Mode for ChromeOS convertible.
 //
 // Copyright (C) 2017 Google, Inc.
 // Author: Gwendal Grignou <gwendal@chromium.org>
+//
+// On Chromebook using ACPI, this device listens for notification
+// from GOOG0006 and issue method TBMC to retrieve the status.
+//
+// GOOG0006 issues the notification when it receives EC_HOST_EVENT_MODE_CHANGE
+// from the EC.
+// Method TBMC reads EC_ACPI_MEM_DEVICE_ORIENTATION byte from the shared
+// memory region.
 
 #include <linux/acpi.h>
 #include <linux/input.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/printk.h>
 
 #define DRV_NAME "chromeos_tbmc"
@@ -32,19 +41,20 @@ static int chromeos_tbmc_query_switch(struct acpi_device *adev,
 
 static __maybe_unused int chromeos_tbmc_resume(struct device *dev)
 {
-	struct acpi_device *adev = to_acpi_device(dev);
-
-	return chromeos_tbmc_query_switch(adev, adev->driver_data);
+	return chromeos_tbmc_query_switch(ACPI_COMPANION(dev), dev_get_drvdata(dev));
 }
 
-static void chromeos_tbmc_notify(struct acpi_device *adev, u32 event)
+static void chromeos_tbmc_notify(acpi_handle handle, u32 event, void *data)
 {
+	struct device *dev = data;
+
+	acpi_pm_wakeup_event(dev);
 	switch (event) {
 	case 0x80:
-		chromeos_tbmc_query_switch(adev, adev->driver_data);
+		chromeos_tbmc_query_switch(ACPI_COMPANION(dev), dev_get_drvdata(dev));
 		break;
 	default:
-		dev_err(&adev->dev, "Unexpected event: 0x%08X\n", event);
+		dev_err(dev, "Unexpected event: 0x%08X\n", event);
 	}
 }
 
@@ -55,11 +65,16 @@ static int chromeos_tbmc_open(struct input_dev *idev)
 	return chromeos_tbmc_query_switch(adev, idev);
 }
 
-static int chromeos_tbmc_add(struct acpi_device *adev)
+static int chromeos_tbmc_probe(struct platform_device *pdev)
 {
 	struct input_dev *idev;
-	struct device *dev = &adev->dev;
+	struct device *dev = &pdev->dev;
+	struct acpi_device *adev;
 	int ret;
+
+	adev = ACPI_COMPANION(dev);
+	if (!adev)
+		return -ENODEV;
 
 	idev = devm_input_allocate_device(dev);
 	if (!idev)
@@ -74,7 +89,7 @@ static int chromeos_tbmc_add(struct acpi_device *adev)
 	idev->open = chromeos_tbmc_open;
 
 	input_set_drvdata(idev, adev);
-	adev->driver_data = idev;
+	platform_set_drvdata(pdev, idev);
 
 	input_set_capability(idev, EV_SW, SW_TABLET_MODE);
 	ret = input_register_device(idev);
@@ -82,7 +97,24 @@ static int chromeos_tbmc_add(struct acpi_device *adev)
 		dev_err(dev, "cannot register input device\n");
 		return ret;
 	}
+	device_init_wakeup(dev, true);
+
+	ret = acpi_dev_install_notify_handler(adev, ACPI_DEVICE_NOTIFY,
+					      chromeos_tbmc_notify, dev);
+	if (ret) {
+		dev_err(dev, "cannot install ACPI notify handler\n");
+		device_init_wakeup(dev, false);
+		return ret;
+	}
+
 	return 0;
+}
+
+static void chromeos_tbmc_remove(struct platform_device *pdev)
+{
+	acpi_dev_remove_notify_handler(ACPI_COMPANION(&pdev->dev),
+				       ACPI_DEVICE_NOTIFY, chromeos_tbmc_notify);
+	device_init_wakeup(&pdev->dev, false);
 }
 
 static const struct acpi_device_id chromeos_tbmc_acpi_device_ids[] = {
@@ -91,21 +123,20 @@ static const struct acpi_device_id chromeos_tbmc_acpi_device_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, chromeos_tbmc_acpi_device_ids);
 
-static const SIMPLE_DEV_PM_OPS(chromeos_tbmc_pm_ops, NULL,
+static SIMPLE_DEV_PM_OPS(chromeos_tbmc_pm_ops, NULL,
 		chromeos_tbmc_resume);
 
-static struct acpi_driver chromeos_tbmc_driver = {
-	.name = DRV_NAME,
-	.class = DRV_NAME,
-	.ids = chromeos_tbmc_acpi_device_ids,
-	.ops = {
-		.add = chromeos_tbmc_add,
-		.notify = chromeos_tbmc_notify,
+static struct platform_driver chromeos_tbmc_driver = {
+	.probe = chromeos_tbmc_probe,
+	.remove = chromeos_tbmc_remove,
+	.driver = {
+		.name = DRV_NAME,
+		.acpi_match_table = chromeos_tbmc_acpi_device_ids,
+		.pm = &chromeos_tbmc_pm_ops,
 	},
-	.drv.pm = &chromeos_tbmc_pm_ops,
 };
 
-module_acpi_driver(chromeos_tbmc_driver);
+module_platform_driver(chromeos_tbmc_driver);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("ChromeOS ACPI tablet switch driver");

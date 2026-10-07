@@ -3,7 +3,9 @@
 #include <linux/sched.h>
 #include <linux/sched/clock.h>
 
+#include <asm/cpu.h>
 #include <asm/cpufeature.h>
+#include <asm/cpuid/api.h>
 #include <asm/e820/api.h>
 #include <asm/mtrr.h>
 #include <asm/msr.h>
@@ -18,16 +20,9 @@
 #define RNG_ENABLED	(1 << 3)
 #define RNG_ENABLE	(1 << 6)	/* MSR_VIA_RNG */
 
-#define X86_VMX_FEATURE_PROC_CTLS_TPR_SHADOW	0x00200000
-#define X86_VMX_FEATURE_PROC_CTLS_VNMI		0x00400000
-#define X86_VMX_FEATURE_PROC_CTLS_2ND_CTLS	0x80000000
-#define X86_VMX_FEATURE_PROC_CTLS2_VIRT_APIC	0x00000001
-#define X86_VMX_FEATURE_PROC_CTLS2_EPT		0x00000002
-#define X86_VMX_FEATURE_PROC_CTLS2_VPID		0x00000020
-
 static void init_c3(struct cpuinfo_x86 *c)
 {
-	u32  lo, hi;
+	u64 msr;
 
 	/* Test for Centaur Extended Feature Flags presence */
 	if (cpuid_eax(0xC0000000) >= 0xC0000001) {
@@ -35,17 +30,17 @@ static void init_c3(struct cpuinfo_x86 *c)
 
 		/* enable ACE unit, if present and disabled */
 		if ((tmp & (ACE_PRESENT | ACE_ENABLED)) == ACE_PRESENT) {
-			rdmsr(MSR_VIA_FCR, lo, hi);
-			lo |= ACE_FCR;		/* enable ACE unit */
-			wrmsr(MSR_VIA_FCR, lo, hi);
+			rdmsrq(MSR_VIA_FCR, msr);
+			/* enable ACE unit */
+			wrmsrq(MSR_VIA_FCR, msr | ACE_FCR);
 			pr_info("CPU: Enabled ACE h/w crypto\n");
 		}
 
 		/* enable RNG unit, if present and disabled */
 		if ((tmp & (RNG_PRESENT | RNG_ENABLED)) == RNG_PRESENT) {
-			rdmsr(MSR_VIA_RNG, lo, hi);
-			lo |= RNG_ENABLE;	/* enable RNG unit */
-			wrmsr(MSR_VIA_RNG, lo, hi);
+			rdmsrq(MSR_VIA_RNG, msr);
+			/* enable RNG unit */
+			wrmsrq(MSR_VIA_RNG, msr | RNG_ENABLE);
 			pr_info("CPU: Enabled h/w RNG\n");
 		}
 
@@ -57,9 +52,8 @@ static void init_c3(struct cpuinfo_x86 *c)
 #ifdef CONFIG_X86_32
 	/* Cyrix III family needs CX8 & PGE explicitly enabled. */
 	if (c->x86_model >= 6 && c->x86_model <= 13) {
-		rdmsr(MSR_VIA_FCR, lo, hi);
-		lo |= (1<<1 | 1<<7);
-		wrmsr(MSR_VIA_FCR, lo, hi);
+		rdmsrq(MSR_VIA_FCR, msr);
+		wrmsrq(MSR_VIA_FCR, msr | (1 << 1 | 1 << 7));
 		set_cpu_cap(c, X86_FEATURE_CX8);
 	}
 
@@ -72,7 +66,8 @@ static void init_c3(struct cpuinfo_x86 *c)
 		set_cpu_cap(c, X86_FEATURE_REP_GOOD);
 	}
 
-	cpu_detect_cache_sizes(c);
+	if (c->x86 >= 7)
+		set_cpu_cap(c, X86_FEATURE_REP_GOOD);
 }
 
 enum {
@@ -98,49 +93,18 @@ enum {
 
 static void early_init_centaur(struct cpuinfo_x86 *c)
 {
-	switch (c->x86) {
 #ifdef CONFIG_X86_32
-	case 5:
-		/* Emulate MTRRs using Centaur's MCR. */
+	/* Emulate MTRRs using Centaur's MCR. */
+	if (c->x86 == 5)
 		set_cpu_cap(c, X86_FEATURE_CENTAUR_MCR);
-		break;
 #endif
-	case 6:
-		if (c->x86_model >= 0xf)
-			set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
-		break;
-	}
-#ifdef CONFIG_X86_64
-	set_cpu_cap(c, X86_FEATURE_SYSENTER32);
-#endif
+	if ((c->x86 == 6 && c->x86_model >= 0xf) ||
+	    (c->x86 >= 7))
+		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
+
 	if (c->x86_power & (1 << 8)) {
 		set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
 		set_cpu_cap(c, X86_FEATURE_NONSTOP_TSC);
-	}
-}
-
-static void centaur_detect_vmx_virtcap(struct cpuinfo_x86 *c)
-{
-	u32 vmx_msr_low, vmx_msr_high, msr_ctl, msr_ctl2;
-
-	rdmsr(MSR_IA32_VMX_PROCBASED_CTLS, vmx_msr_low, vmx_msr_high);
-	msr_ctl = vmx_msr_high | vmx_msr_low;
-
-	if (msr_ctl & X86_VMX_FEATURE_PROC_CTLS_TPR_SHADOW)
-		set_cpu_cap(c, X86_FEATURE_TPR_SHADOW);
-	if (msr_ctl & X86_VMX_FEATURE_PROC_CTLS_VNMI)
-		set_cpu_cap(c, X86_FEATURE_VNMI);
-	if (msr_ctl & X86_VMX_FEATURE_PROC_CTLS_2ND_CTLS) {
-		rdmsr(MSR_IA32_VMX_PROCBASED_CTLS2,
-		      vmx_msr_low, vmx_msr_high);
-		msr_ctl2 = vmx_msr_high | vmx_msr_low;
-		if ((msr_ctl2 & X86_VMX_FEATURE_PROC_CTLS2_VIRT_APIC) &&
-		    (msr_ctl & X86_VMX_FEATURE_PROC_CTLS_TPR_SHADOW))
-			set_cpu_cap(c, X86_FEATURE_FLEXPRIORITY);
-		if (msr_ctl2 & X86_VMX_FEATURE_PROC_CTLS2_EPT)
-			set_cpu_cap(c, X86_FEATURE_EPT);
-		if (msr_ctl2 & X86_VMX_FEATURE_PROC_CTLS2_VPID)
-			set_cpu_cap(c, X86_FEATURE_VPID);
 	}
 }
 
@@ -150,21 +114,12 @@ static void init_centaur(struct cpuinfo_x86 *c)
 	char *name;
 	u32  fcr_set = 0;
 	u32  fcr_clr = 0;
-	u32  lo, hi, newlo;
+	u32  newlo;
 	u32  aa, bb, cc, dd;
-
-	/*
-	 * Bit 31 in normal CPUID used for nonstandard 3DNow ID;
-	 * 3DNow is IDd by bit 31 in extended CPUID (1*32+31) anyway
-	 */
-	clear_cpu_cap(c, 0*32+31);
+	struct msr val;
 #endif
 	early_init_centaur(c);
 	init_intel_cacheinfo(c);
-	detect_num_cpu_cores(c);
-#ifdef CONFIG_X86_32
-	detect_ht(c);
-#endif
 
 	if (c->cpuid_level > 9) {
 		unsigned int eax = cpuid_eax(10);
@@ -178,9 +133,8 @@ static void init_centaur(struct cpuinfo_x86 *c)
 			set_cpu_cap(c, X86_FEATURE_ARCH_PERFMON);
 	}
 
-	switch (c->x86) {
 #ifdef CONFIG_X86_32
-	case 5:
+	if (c->x86 == 5) {
 		switch (c->x86_model) {
 		case 4:
 			name = "C6";
@@ -215,15 +169,16 @@ static void init_centaur(struct cpuinfo_x86 *c)
 			name = "??";
 		}
 
-		rdmsr(MSR_IDT_FCR1, lo, hi);
-		newlo = (lo|fcr_set) & (~fcr_clr);
+		rdmsrq(MSR_IDT_FCR1, val.q);
+		newlo = (val.l | fcr_set) & (~fcr_clr);
 
-		if (newlo != lo) {
+		if (newlo != val.l) {
 			pr_info("Centaur FCR was 0x%X now 0x%X\n",
-				lo, newlo);
-			wrmsr(MSR_IDT_FCR1, newlo, hi);
+				val.l, newlo);
+			val.l = newlo;
+			wrmsrq(MSR_IDT_FCR1, val.q);
 		} else {
-			pr_info("Centaur FCR is 0x%X\n", lo);
+			pr_info("Centaur FCR is 0x%X\n", val.l);
 		}
 		/* Emulate MTRRs using Centaur's MCR. */
 		set_cpu_cap(c, X86_FEATURE_CENTAUR_MCR);
@@ -240,18 +195,15 @@ static void init_centaur(struct cpuinfo_x86 *c)
 			c->x86_cache_size = (cc>>24)+(dd>>24);
 		}
 		sprintf(c->x86_model_id, "WinChip %s", name);
-		break;
-#endif
-	case 6:
-		init_c3(c);
-		break;
 	}
+#endif
+	if (c->x86 == 6 || c->x86 >= 7)
+		init_c3(c);
 #ifdef CONFIG_X86_64
 	set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
 #endif
 
-	if (cpu_has(c, X86_FEATURE_VMX))
-		centaur_detect_vmx_virtcap(c);
+	init_ia32_feat_ctl(c);
 }
 
 #ifdef CONFIG_X86_32
